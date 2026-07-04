@@ -5,13 +5,20 @@
  * than the Twitter-claim model Moltbook used. Attested owners get a badge and
  * a per-owner soft cap (default 5 agents).
  *
- * NOTE (hardening): the verify step fetches an owner-supplied URL server-side —
- * a potential SSRF vector. Restricted to https + public hostnames here; a
- * production deployment should add an allowlist/egress proxy (tracked as a
- * hardening item, alongside the pen test §12).
+ * SSRF defense: the verify step fetches an owner-supplied URL server-side. We
+ * (1) require a syntactically-valid public domain, (2) resolve its A/AAAA
+ * records and REJECT if any address is loopback/private/link-local/reserved —
+ * so a public name that resolves to 127.0.0.1 or the cloud metadata endpoint
+ * (169.254.169.254) is refused before any request is made — and (3) fetch
+ * https-only with redirects disabled and a short timeout. A DNS-rebinding
+ * window between check and fetch remains; a production deployment should pin
+ * the connection to the vetted IP or route through an egress proxy (tracked
+ * with the pen test §12).
  */
 
 import type { FastifyInstance } from "fastify";
+import { lookup } from "node:dns/promises";
+import net from "node:net";
 import { randomBytes, toB64u } from "@waggle/core";
 import { pool } from "../db.js";
 import { config } from "../config.js";
@@ -20,6 +27,49 @@ import { requireSession } from "../lib/session.js";
 
 const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 const PRIVATE_HOST = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|0\.|169\.254\.|\[?::1)/i;
+
+/** True if an IP literal is NOT globally routable (loopback/private/link-local/reserved). */
+export function isPrivateIp(ip: string): boolean {
+  const v = net.isIP(ip);
+  if (v === 4) {
+    const p = ip.split(".").map(Number);
+    const [a, b] = p;
+    if (a === undefined || b === undefined) return true;
+    return (
+      a === 0 || a === 10 || a === 127 || a >= 224 || // reserved/multicast/broadcast
+      (a === 169 && b === 254) || // link-local (cloud metadata)
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) || // CGNAT
+      (a === 192 && b === 0) || // 192.0.0.0/24 + 192.0.2.0/24
+      (a === 198 && (b === 18 || b === 19)) // benchmarking
+    );
+  }
+  if (v === 6) {
+    const lo = ip.toLowerCase();
+    if (lo === "::1" || lo === "::") return true;
+    if (lo.startsWith("fe8") || lo.startsWith("fe9") || lo.startsWith("fea") || lo.startsWith("feb"))
+      return true; // link-local fe80::/10
+    if (lo.startsWith("fc") || lo.startsWith("fd")) return true; // ULA fc00::/7
+    const mapped = lo.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/); // IPv4-mapped
+    if (mapped) return isPrivateIp(mapped[1]!);
+    return false;
+  }
+  return true; // unparseable → refuse
+}
+
+/** Resolve a domain and reject unless EVERY address it resolves to is public. */
+async function assertPublicResolvable(domain: string): Promise<void> {
+  let addrs: Array<{ address: string }>;
+  try {
+    addrs = await lookup(domain, { all: true });
+  } catch {
+    throw errors.badRequest("domain does not resolve");
+  }
+  if (addrs.length === 0 || addrs.some((a) => isPrivateIp(a.address))) {
+    throw errors.badRequest("domain resolves to a non-public address");
+  }
+}
 
 export async function attestationRoutes(app: FastifyInstance): Promise<void> {
   app.post("/v1/attestation/challenge", async (req, reply) => {
@@ -66,6 +116,10 @@ export async function attestationRoutes(app: FastifyInstance): Promise<void> {
     if (Number(cap[0].n) >= config.attestation.perDomainCap) {
       throw errors.forbidden(`domain already attests ${config.attestation.perDomainCap} agents`);
     }
+
+    // SSRF guard: refuse before fetching if the domain resolves to any
+    // non-public address (blocks public-name → 127.0.0.1 / 169.254.169.254).
+    await assertPublicResolvable(domain);
 
     let text: string;
     try {
