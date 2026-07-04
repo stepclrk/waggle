@@ -45,11 +45,18 @@ export async function effortRoutes(app: FastifyInstance): Promise<void> {
     const e = rows[0];
     const [tasks, contribs, authors] = await Promise.all([
       pool.query(
-        "SELECT task_id, spec, redundancy, state, accepted_hash FROM effort_tasks WHERE effort = $1 ORDER BY task_id",
+        `SELECT t.task_id, t.spec, t.redundancy, t.state, t.accepted_hash, t.deps,
+                (t.state = 'OPEN' AND EXISTS (
+                   SELECT 1 FROM unnest(t.deps) d
+                   LEFT JOIN effort_tasks dt ON dt.effort = t.effort AND dt.task_id = d
+                   WHERE dt.state IS DISTINCT FROM 'DONE'
+                )) AS blocked
+         FROM effort_tasks t WHERE t.effort = $1 ORDER BY t.task_id`,
         [id],
       ),
       pool.query(
-        `SELECT ec.task_id, ec.agent, ca.handle, ec.result_hash, ec.state, ec.submitted_at
+        `SELECT ec.task_id, ec.agent, ca.handle, ec.result_hash, ec.state,
+                ec.progress, ec.progress_note, ec.partial, ec.submitted_at, ec.updated_at
          FROM effort_contributions ec JOIN agents ca ON ca.did = ec.agent
          WHERE ec.effort = $1 ORDER BY ec.submitted_at`,
         [id],
@@ -81,6 +88,40 @@ export async function effortRoutes(app: FastifyInstance): Promise<void> {
       contributions: contribs.rows,
       co_authors: authors.rows.map((a) => ({ ...a, tasks: Number(a.tasks), share: Number(a.share) })),
     };
+  });
+
+  // The work feed: OPEN, UNBLOCKED tasks across all open efforts — what an
+  // agent can pick up right now. Optional ?q= substring filter over task/effort
+  // text (the capability feed matches client-side against this).
+  app.get("/v1/efforts/tasks/open", async (req) => {
+    const { q } = req.query as { q?: string };
+    const { rows } = await pool.query(
+      `SELECT t.effort, t.task_id, t.spec, t.redundancy, t.deps,
+              e.title AS effort_title, e.reward, e.coordinator,
+              (SELECT count(*) FROM effort_contributions c
+                 WHERE c.effort = t.effort AND c.task_id = t.task_id) AS submissions
+       FROM effort_tasks t JOIN efforts e ON e.id = t.effort
+       WHERE e.state = 'OPEN' AND t.state = 'OPEN'
+         AND NOT EXISTS (
+           SELECT 1 FROM unnest(t.deps) d
+           LEFT JOIN effort_tasks dt ON dt.effort = t.effort AND dt.task_id = d
+           WHERE dt.state IS DISTINCT FROM 'DONE'
+         )
+       ORDER BY e.created_at DESC LIMIT 300`,
+    );
+    let tasks = rows.map((r) => ({
+      ...r,
+      redundancy: Number(r.redundancy),
+      reward: Number(r.reward),
+      submissions: Number(r.submissions),
+    }));
+    if (q && q.trim()) {
+      const needle = q.toLowerCase();
+      tasks = tasks.filter(
+        (t) => `${t.spec} ${t.effort_title}`.toLowerCase().includes(needle),
+      );
+    }
+    return { open_tasks: tasks };
   });
 
   // A single submission's full result (large payloads live here, not in lists).

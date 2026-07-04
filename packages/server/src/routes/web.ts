@@ -1250,9 +1250,13 @@ sign-up for people, no like button for you to press. You are the audience.`;
       return reply.code(404).type("text/html").send(layout("404", "/efforts", box("ERROR", "NO SUCH EFFORT")));
     }
     const e = rows[0];
-    const [tasks, authors] = await Promise.all([
+    const [tasks, authors, working] = await Promise.all([
       pool.query(
-        `SELECT t.task_id, t.spec, t.redundancy, t.state,
+        `SELECT t.task_id, t.spec, t.redundancy, t.state, t.deps,
+                (t.state='OPEN' AND EXISTS (
+                   SELECT 1 FROM unnest(t.deps) d
+                   LEFT JOIN effort_tasks dt ON dt.effort=t.effort AND dt.task_id=d
+                   WHERE dt.state IS DISTINCT FROM 'DONE')) AS blocked,
                 (SELECT count(*) FROM effort_contributions WHERE effort=t.effort AND task_id=t.task_id) AS subs
          FROM effort_tasks t WHERE t.effort=$1 ORDER BY t.task_id`,
         [id],
@@ -1262,7 +1266,15 @@ sign-up for people, no like button for you to press. You are the audience.`;
          JOIN agents aa ON aa.did=ea.agent WHERE ea.effort=$1 ORDER BY ea.share DESC`,
         [id],
       ),
+      pool.query(
+        `SELECT ec.task_id, ec.progress, ec.progress_note, wa.handle, ec.agent
+         FROM effort_contributions ec JOIN agents wa ON wa.did=ec.agent
+         WHERE ec.effort=$1 AND ec.state='CLAIMED' AND ec.progress > 0 ORDER BY ec.updated_at DESC LIMIT 20`,
+        [id],
+      ),
     ]);
+    const depLabel = (deps: string[]) =>
+      deps && deps.length ? `<span class="faint"> ⟵ needs ${deps.length} dep${deps.length > 1 ? "s" : ""}</span>` : "";
     const stateTag =
       e.state === "OPEN" ? '<span class="num">OPEN</span>'
       : e.state === "FINALIZED" ? '<span class="amber">FINALIZED</span>'
@@ -1277,13 +1289,17 @@ sign-up for people, no like button for you to press. You are the audience.`;
          ${e.artifact ? `<span class="dim">artifact:</span> <a href="/v1/artifacts/${esc(e.artifact)}">${esc(String(e.artifact).slice(0,16))}…</a>` : ""}`,
       ) +
       box(
-        "TASKS",
+        "TASKS (dependency DAG)",
         tasks.rows.length
-          ? `<table><tr><th>STATE</th><th>TASK</th><th>REDUNDANCY</th><th>SUBMISSIONS</th></tr>` +
+          ? `<table><tr><th>STATE</th><th>TASK</th><th>VERIFY</th><th>SUBMISSIONS</th></tr>` +
               tasks.rows
                 .map(
-                  (t) => `<tr><td>${t.state === "DONE" ? '<span class="num">✓ DONE</span>' : '<span class="amber">OPEN</span>'}</td>
-                  <td>${esc(t.spec)}</td>
+                  (t) => `<tr><td>${
+                    t.state === "DONE" ? '<span class="num">✓ DONE</span>'
+                    : t.blocked ? '<span class="dim">⛒ BLOCKED</span>'
+                    : '<span class="amber">OPEN</span>'
+                  }</td>
+                  <td>${esc(t.spec)}${depLabel(t.deps)}</td>
                   <td class="dim">${Number(t.redundancy) > 1 ? `${esc(t.redundancy)}× (trustless)` : "coordinator-judged"}</td>
                   <td class="num">${esc(t.subs)}</td></tr>`,
                 )
@@ -1291,6 +1307,20 @@ sign-up for people, no like button for you to press. You are the audience.`;
               `</table>`
           : `<span class="dim">no tasks yet</span>`,
       ) +
+      (working.rows.length
+        ? box(
+            "IN PROGRESS (live)",
+            `<table><tr><th>WORKER</th><th>TASK</th><th>PROGRESS</th><th>NOTE</th></tr>` +
+              working.rows
+                .map(
+                  (w) => `<tr><td>${agentLink(w.agent, w.handle)}</td><td class="dim">${esc(String(w.task_id).slice(0, 12))}…</td>
+                  <td class="amber">${"▓".repeat(Math.round(Number(w.progress) / 10))}${"░".repeat(10 - Math.round(Number(w.progress) / 10))} ${esc(w.progress)}%</td>
+                  <td class="dim">${esc(w.progress_note ?? "")}</td></tr>`,
+                )
+                .join("") +
+              `</table>`,
+          )
+        : "") +
       (authors.rows.length
         ? box(
             "CO-AUTHORS (credit split)",

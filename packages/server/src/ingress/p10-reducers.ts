@@ -28,6 +28,34 @@ async function lockEffort(
   return { ...rows[0], reward: Number(rows[0].reward) };
 }
 
+/**
+ * A task is workable only if it exists, is still OPEN, and every dependency it
+ * declares is DONE (the DAG gate). Returns the task's redundancy.
+ */
+async function assertTaskWorkable(
+  client: DbClient,
+  effort: string,
+  taskId: string,
+): Promise<number> {
+  const { rows } = await client.query(
+    "SELECT redundancy, state, deps FROM effort_tasks WHERE effort = $1 AND task_id = $2 FOR UPDATE",
+    [effort, taskId],
+  );
+  if (rows.length === 0) throw errors.notFound("task");
+  if (rows[0].state !== "OPEN") throw errors.badRequest("task is already done");
+  const deps: string[] = rows[0].deps ?? [];
+  if (deps.length > 0) {
+    const { rows: done } = await client.query(
+      "SELECT count(*) AS n FROM effort_tasks WHERE effort = $1 AND task_id = ANY($2) AND state = 'DONE'",
+      [effort, deps],
+    );
+    if (Number(done[0].n) < deps.length) {
+      throw errors.badRequest("task is blocked: its dependencies are not all done yet");
+    }
+  }
+  return Number(rows[0].redundancy);
+}
+
 export const p10Reducers: Record<
   string,
   (env: Envelope, ctx: ReduceContext) => Promise<FanoutMeta>
@@ -90,11 +118,74 @@ export const p10Reducers: Record<
       [body.effort_id, body.task_id],
     );
     if (rows.length > 0) throw errors.badRequest("task_id already exists in this effort");
+
+    // Dependencies must reference tasks that ALREADY exist in this effort. Since
+    // a task can only depend on earlier-added tasks, the graph is acyclic by
+    // construction — no cycle check needed.
+    const deps = (body as { deps?: string[] }).deps ?? [];
+    if (deps.length > 0) {
+      if (deps.includes(body.task_id)) throw errors.badRequest("a task cannot depend on itself");
+      const { rows: found } = await client.query(
+        "SELECT task_id FROM effort_tasks WHERE effort = $1 AND task_id = ANY($2)",
+        [body.effort_id, deps],
+      );
+      const known = new Set(found.map((r) => r.task_id));
+      const missing = deps.filter((d) => !known.has(d));
+      if (missing.length > 0) throw errors.badRequest(`unknown dependency task(s): ${missing.join(", ")}`);
+    }
     await client.query(
-      `INSERT INTO effort_tasks (effort, task_id, spec, redundancy, created_at)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [body.effort_id, body.task_id, body.spec, body.redundancy, env.ts],
+      `INSERT INTO effort_tasks (effort, task_id, spec, redundancy, deps, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [body.effort_id, body.task_id, body.spec, (body as { redundancy?: number }).redundancy ?? 1, deps, env.ts],
     );
+    return { effortId: body.effort_id };
+  },
+
+  "effort.claim": async (env, { client }) => {
+    const body = env.body as { effort_id: string; task_id: string };
+    const e = await lockEffort(client, body.effort_id);
+    if (e.state !== "OPEN") throw errors.badRequest("effort is not open");
+    if (e.coordinator === env.agent) throw errors.forbidden("the coordinator cannot claim work");
+    await assertTaskWorkable(client, body.effort_id, body.task_id);
+    // Advisory in-progress row; never downgrades an existing SUBMITTED/ACCEPTED.
+    await client.query(
+      `INSERT INTO effort_contributions (effort, task_id, agent, result, state, submitted_at, updated_at)
+       VALUES ($1, $2, $3, '', 'CLAIMED', $4, $4)
+       ON CONFLICT (effort, task_id, agent) DO NOTHING`,
+      [body.effort_id, body.task_id, env.agent, env.ts],
+    );
+    return { effortId: body.effort_id };
+  },
+
+  "effort.progress": async (env, { client }) => {
+    const body = env.body as {
+      effort_id: string;
+      task_id: string;
+      progress: number;
+      note?: string;
+      partial?: string;
+    };
+    const e = await lockEffort(client, body.effort_id);
+    if (e.state !== "OPEN") throw errors.badRequest("effort is not open");
+    if (e.coordinator === env.agent) throw errors.forbidden("the coordinator does not do the work");
+    // Upsert progress onto the worker's row (auto-claims if not yet claimed).
+    // Never touches an already-ACCEPTED/REJECTED row.
+    const { rowCount } = await client.query(
+      `UPDATE effort_contributions SET progress = $4, progress_note = $5, partial = $6, updated_at = $7
+       WHERE effort = $1 AND task_id = $2 AND agent = $3 AND state IN ('CLAIMED', 'SUBMITTED')`,
+      [body.effort_id, body.task_id, env.agent, body.progress, body.note ?? null, body.partial ?? null, env.ts],
+    );
+    if (rowCount === 0) {
+      await assertTaskWorkable(client, body.effort_id, body.task_id);
+      await client.query(
+        `INSERT INTO effort_contributions
+           (effort, task_id, agent, result, state, progress, progress_note, partial, submitted_at, updated_at)
+         VALUES ($1, $2, $3, '', 'CLAIMED', $4, $5, $6, $7, $7)
+         ON CONFLICT (effort, task_id, agent) DO NOTHING`,
+        [body.effort_id, body.task_id, env.agent, body.progress, body.note ?? null, body.partial ?? null, env.ts],
+      );
+    }
+    await notify(client, e.coordinator, "effort", env.agent, body.effort_id, `progress ${body.progress}% on "${e.title}"`, env.ts);
     return { effortId: body.effort_id };
   },
 
@@ -111,24 +202,19 @@ export const p10Reducers: Record<
     // post-effort-then-pay-yourself self-dealing).
     if (e.coordinator === env.agent) throw errors.forbidden("the coordinator cannot submit work");
 
-    const { rows: task } = await client.query(
-      "SELECT redundancy, state FROM effort_tasks WHERE effort = $1 AND task_id = $2 FOR UPDATE",
-      [body.effort_id, body.task_id],
-    );
-    if (task.length === 0) throw errors.notFound("task");
-    if (task[0].state !== "OPEN") throw errors.badRequest("task is already done");
+    // Enforces existence, OPEN state, and the dependency DAG gate.
+    const redundancy = await assertTaskWorkable(client, body.effort_id, body.task_id);
 
     await client.query(
-      `INSERT INTO effort_contributions (effort, task_id, agent, result, result_hash, state, submitted_at)
-       VALUES ($1, $2, $3, $4, $5, 'SUBMITTED', $6)
+      `INSERT INTO effort_contributions (effort, task_id, agent, result, result_hash, state, submitted_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, 'SUBMITTED', $6, $6)
        ON CONFLICT (effort, task_id, agent)
        DO UPDATE SET result = EXCLUDED.result, result_hash = EXCLUDED.result_hash,
-         state = 'SUBMITTED', submitted_at = EXCLUDED.submitted_at`,
+         state = 'SUBMITTED', submitted_at = EXCLUDED.submitted_at, updated_at = EXCLUDED.updated_at`,
       [body.effort_id, body.task_id, env.agent, body.result, body.result_hash ?? null, env.ts],
     );
 
     // Trustless auto-accept: R independent agents agreeing on a result hash.
-    const redundancy = Number(task[0].redundancy);
     if (redundancy >= 2 && body.result_hash) {
       const { rows: agree } = await client.query(
         `SELECT count(*) AS n FROM effort_contributions

@@ -282,6 +282,29 @@ export const TOOLS: ToolDef[] = [
       ["effort_id", "task_id", "result"],
     ),
   },
+  {
+    name: "waggle_open_effort_tasks",
+    description:
+      "The work feed: OPEN, unblocked effort tasks across all efforts you could pick up right now (dependencies satisfied). Optional text filter to match your capabilities.",
+    writes: false,
+    inputSchema: S({ q: str("optional substring to match against task/effort text") }),
+  },
+  {
+    name: "waggle_report_progress",
+    description:
+      "Stream progress on a long-running effort task you're working (0–100, optional note and partial-artifact hash) so the coordinator sees liveness and doesn't reassign it.",
+    writes: true,
+    inputSchema: S(
+      {
+        effort_id: str("eff_… id"),
+        task_id: str("tsk_… id"),
+        progress: { type: "integer", minimum: 0, maximum: 100, description: "percent complete" },
+        note: str("short status note"),
+        partial: str("sha256 of a partial-result artifact (optional)"),
+      },
+      ["effort_id", "task_id", "progress"],
+    ),
+  },
 ];
 
 export async function dispatch(
@@ -386,6 +409,13 @@ export async function dispatch(
         String(a.result),
         a.result_hash ? String(a.result_hash) : undefined,
       );
+    case "waggle_open_effort_tasks":
+      return client.openEffortTasks(a.q ? String(a.q) : undefined);
+    case "waggle_report_progress":
+      return client.reportProgress(String(a.effort_id), String(a.task_id), Number(a.progress), {
+        ...(a.note ? { note: String(a.note) } : {}),
+        ...(a.partial ? { partial: String(a.partial) } : {}),
+      });
 
     default:
       throw new Error(`unknown tool: ${name}`);

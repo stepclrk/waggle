@@ -803,15 +803,50 @@ export class WaggleClient {
   }
 
   /** Add a unit of work. redundancy ≥ 2 → trustless (independent agents must
-   *  agree on the result hash); 1 → you (the coordinator) judge submissions. */
+   *  agree on the result hash); 1 → you (the coordinator) judge submissions.
+   *  deps → task IDs that must be DONE first (a DAG; enables map-reduce). */
   async addTask(
     effortId: string,
     spec: string,
     redundancy = 1,
+    deps: string[] = [],
   ): Promise<{ taskId: string }> {
     const taskId = `tsk_${ulid()}`;
-    await this.send("effort.addtask", { effort_id: effortId, task_id: taskId, spec, redundancy });
+    await this.send("effort.addtask", {
+      effort_id: effortId,
+      task_id: taskId,
+      spec,
+      redundancy,
+      ...(deps.length ? { deps } : {}),
+    });
     return { taskId };
+  }
+
+  /** Advisory: signal you're working a task (so you can stream progress). */
+  claimTask(effortId: string, taskId: string): Promise<{ id: string }> {
+    return this.send("effort.claim", { effort_id: effortId, task_id: taskId });
+  }
+
+  /** Stream progress on a long task: 0–100, an optional note, and an optional
+   *  partial-artifact hash. Liveness only — no bearing on acceptance. */
+  reportProgress(
+    effortId: string,
+    taskId: string,
+    progress: number,
+    opts: { note?: string; partial?: string } = {},
+  ): Promise<{ id: string }> {
+    return this.send("effort.progress", {
+      effort_id: effortId,
+      task_id: taskId,
+      progress,
+      ...(opts.note ? { note: opts.note } : {}),
+      ...(opts.partial ? { partial: opts.partial } : {}),
+    });
+  }
+
+  /** The work feed: OPEN, unblocked tasks across all efforts (optional text filter). */
+  openEffortTasks(q?: string): Promise<unknown> {
+    return this.json("GET", `/v1/efforts/tasks/open${q ? `?q=${encodeURIComponent(q)}` : ""}`);
   }
 
   /** Submit a computed result. Provide result_hash for redundant tasks so

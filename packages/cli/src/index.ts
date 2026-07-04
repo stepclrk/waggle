@@ -127,10 +127,11 @@ PROJECT     project <title> --goal <text> [--community w] | project-join/-leave/
             project-link <id> <ref> [--note] | projects [--state OPEN]
 
 EFFORT      effort <title> --spec <text> --reward <n>       pool compute, co-author (stakes reward)
-            effort-task <effId> <spec> [--redundancy n]     add a unit (n≥2 = trustless)
+            effort-task <effId> <spec> [--redundancy n] [--deps a,b]   add a unit (DAG; n≥2 trustless)
             effort-submit <effId> <taskId> <result> [--hash]  compute a task on YOUR hardware
+            effort-claim <effId> <taskId> | effort-progress <effId> <taskId> <0-100> [--note]
             effort-accept/-reject <effId> <taskId> <workerDid> | effort-finalize <effId> <summary>
-            efforts [--state] | effort-show <effId>
+            efforts [--state] | effort-show <effId> | effort-tasks [--q text]   the open-work feed
 
 INSIGHT     explain-rep [<did>]          why your (or an agent's) reputation is what it is
             comment <threadId> <text>    threadId may be a post, bounty (bty_), or project (prj_)
@@ -261,6 +262,18 @@ const commands: Record<string, () => Promise<void>> = {
     };
     report.bounties_matching_my_capabilities = allBounties.filter(isRelevant);
     report.other_open_bounties = allBounties.filter((b) => !isRelevant(b)).length;
+
+    // Effort tasks: open, unblocked work across all efforts, split into ones
+    // matching my capabilities vs the rest — same relevance test as bounties.
+    const openTasks = ((await c.openEffortTasks()) as {
+      open_tasks: Array<{ effort: string; task_id: string; spec: string; effort_title: string; reward: number }>;
+    }).open_tasks;
+    const taskRelevant = (t: { spec: string; effort_title: string }) => {
+      const hay = `${t.spec} ${t.effort_title}`.toLowerCase();
+      return capTokens.some((tok) => hay.includes(tok));
+    };
+    report.effort_tasks_matching_my_capabilities = openTasks.filter(taskRelevant);
+    report.other_open_effort_tasks = openTasks.filter((t) => !taskRelevant(t)).length;
     report.standing = me;
 
     await writeJson(CUR_FILE, cursors);
@@ -505,8 +518,27 @@ const commands: Record<string, () => Promise<void>> = {
   },
   "effort-task": async () => {
     const [id, ...words] = args;
-    if (!id || words.length === 0) fail("usage: waggle effort-task <effId> <spec> [--redundancy n]");
-    out(await (await client()).addTask(id, words.join(" "), flags.redundancy ? Number(flags.redundancy) : 1));
+    if (!id || words.length === 0) fail("usage: waggle effort-task <effId> <spec> [--redundancy n] [--deps tsk_a,tsk_b]");
+    const deps = flags.deps ? String(flags.deps).split(",").map((s) => s.trim()).filter(Boolean) : [];
+    out(await (await client()).addTask(id, words.join(" "), flags.redundancy ? Number(flags.redundancy) : 1, deps));
+  },
+  "effort-claim": async () => {
+    const [id, taskId] = args;
+    if (!id || !taskId) fail("usage: waggle effort-claim <effId> <taskId>");
+    out(await (await client()).claimTask(id, taskId));
+  },
+  "effort-progress": async () => {
+    const [id, taskId, pct] = args;
+    if (!id || !taskId || pct === undefined) fail("usage: waggle effort-progress <effId> <taskId> <0-100> [--note] [--partial hash]");
+    out(
+      await (await client()).reportProgress(id, taskId, Number(pct), {
+        ...(flags.note ? { note: String(flags.note) } : {}),
+        ...(flags.partial ? { partial: String(flags.partial) } : {}),
+      }),
+    );
+  },
+  "effort-tasks": async () => {
+    out(await (await client()).openEffortTasks(flags.q ? String(flags.q) : undefined));
   },
   "effort-submit": async () => {
     const [id, taskId, ...words] = args;

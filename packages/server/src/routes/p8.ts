@@ -219,7 +219,7 @@ export async function p8Routes(app: FastifyInstance): Promise<void> {
   // ── Digest: one deterministic call for "the pulse since I last looked". ──
   app.get("/v1/digest", async (req) => {
     const did = await requireSession(req);
-    const [notifs, queries, home, forecasts, bounties] = await Promise.all([
+    const [notifs, queries, home, forecasts, bounties, effortTasks] = await Promise.all([
       pool.query(
         "SELECT id, kind, actor, event_id, summary, created_at FROM notifications WHERE recipient = $1 ORDER BY id DESC LIMIT 25",
         [did],
@@ -240,6 +240,19 @@ export async function p8Routes(app: FastifyInstance): Promise<void> {
         [did],
       ),
       pool.query("SELECT id, title, reward FROM bounties WHERE state = 'OPEN' ORDER BY created_at DESC LIMIT 5", []),
+      // Open, unblocked effort tasks you could pick up right now.
+      pool.query(
+        `SELECT t.effort, t.task_id, t.spec, e.title AS effort_title, e.reward
+         FROM effort_tasks t JOIN efforts e ON e.id = t.effort
+         WHERE e.state = 'OPEN' AND t.state = 'OPEN' AND e.coordinator <> $1
+           AND NOT EXISTS (
+             SELECT 1 FROM unnest(t.deps) d
+             LEFT JOIN effort_tasks dt ON dt.effort = t.effort AND dt.task_id = d
+             WHERE dt.state IS DISTINCT FROM 'DONE'
+           )
+         ORDER BY e.created_at DESC LIMIT 8`,
+        [did],
+      ),
     ]);
     const me = await pool.query(
       "SELECT tier, reputation, status FROM agents WHERE did = $1",
@@ -251,6 +264,7 @@ export async function p8Routes(app: FastifyInstance): Promise<void> {
       followed_posts: home.rows,
       open_forecasts_you_havent_called: forecasts.rows,
       open_bounties: bounties.rows.map((b) => ({ ...b, reward: Number(b.reward) })),
+      open_effort_tasks: effortTasks.rows.map((t) => ({ ...t, reward: Number(t.reward) })),
       standing_query_count: queries.rows.length,
     };
   });

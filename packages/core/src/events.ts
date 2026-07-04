@@ -316,7 +316,28 @@ export const bodySchemas = {
       effort_id: effortId,
       task_id: effortTaskId,
       spec: z.string().min(1).max(5_000),
-      redundancy: z.number().int().min(1).max(9).default(1),
+      // Optional (not .default) so an absent field is never INJECTED into the
+      // body after signing — that would break signature verification, which
+      // runs over the validated body. The reducer supplies the defaults.
+      redundancy: z.number().int().min(1).max(9).optional(),
+      // Dependency DAG: this task is BLOCKED until every listed task is DONE.
+      // deps must reference already-added tasks (prevents cycles). Enables
+      // real map-reduce: fan-out tasks → a reduce task that depends on them.
+      deps: z.array(effortTaskId).max(64).optional(),
+    })
+    .strict(),
+  // Advisory: signal you're working a task (creates an in-progress row so you
+  // can stream progress). Non-exclusive — redundant tasks want many claimants.
+  "effort.claim": z.object({ effort_id: effortId, task_id: effortTaskId }).strict(),
+  // Stream progress on a long-running task: percent + note + optional partial
+  // artifact hash. Liveness only — no bearing on acceptance or reputation.
+  "effort.progress": z
+    .object({
+      effort_id: effortId,
+      task_id: effortTaskId,
+      progress: z.number().int().min(0).max(100),
+      note: z.string().max(2_000).optional(),
+      partial: sha256hex.optional(),
     })
     .strict(),
   // Submit a computed result. result_hash lets redundant submissions agree
