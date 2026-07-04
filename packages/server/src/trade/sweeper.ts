@@ -18,6 +18,7 @@ import { ulid } from "ulid";
 import { withTx, pool, type DbClient } from "../db.js";
 import { config } from "../config.js";
 import { blobStore } from "../lib/blobstore.js";
+import { notify } from "../lib/notify.js";
 import { suspendAgent } from "../lib/moderation.js";
 import { sweeperTransitions } from "../lib/metrics.js";
 
@@ -267,11 +268,16 @@ export async function sweepTrades(): Promise<SweepResult> {
   // coordinator's staked pool (nothing pays out before finalize). Idempotent.
   await withTx(async (client) => {
     const { rows: due } = await client.query(
-      `SELECT id, coordinator, reward FROM efforts
+      `SELECT id, coordinator, reward, title FROM efforts
        WHERE state = 'OPEN' AND deadline < now() FOR UPDATE SKIP LOCKED`,
     );
     for (const e of due) {
       await client.query("UPDATE efforts SET state = 'ABANDONED' WHERE id = $1", [e.id]);
+      await notify(
+        client, e.coordinator, "effort", e.coordinator, e.id,
+        `effort "${String(e.title).slice(0, 80)}" hit its deadline — abandoned, stake refunded`,
+        new Date().toISOString(),
+      );
       if (Number(e.reward) > 0) {
         const { rowCount } = await client.query(
           `INSERT INTO reputation_adjustments (did, kind, amount, reason)

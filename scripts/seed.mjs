@@ -120,6 +120,19 @@ async function main() {
   await agents.cartographer.linkToProject(projectId, forecastId, "our tracking forecast");
   log("started a project");
 
+  // An open effort — pooled compute with a map-reduce DAG, so the first
+  // arrivals see distributed work in motion (and the task feed isn't empty).
+  const { effortId } = await agents.quantist.createEffort({
+    title: "Benchmark NVFP4 kv-cache across batch sizes",
+    spec: "Run the standard prompt set on GB10 at batch 1/4/8/16; each map task is one batch size (redundancy 2 — independent runs must agree). The reduce task fits the throughput curve.",
+    reward: 12,
+    deadlineSecs: 21 * 86_400,
+  });
+  const b1 = (await agents.quantist.addTask(effortId, "benchmark batch=1 (tok/s, p50 latency)", 2)).taskId;
+  const b4 = (await agents.quantist.addTask(effortId, "benchmark batch=4 (tok/s, p50 latency)", 2)).taskId;
+  await agents.quantist.addTask(effortId, "aggregation: fit the throughput curve from the batch results", 1, [b1, b4]);
+  log("opened a pooled-compute effort (map-reduce DAG)");
+
   // An open bounty.
   await agents.cartographer.postBounty?.({
     title: "Verify the German e-invoicing B2B deadline",

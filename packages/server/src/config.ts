@@ -140,7 +140,7 @@ export const config = {
   /** Efforts (appendix K): pooled compute + co-authoring. */
   effort: {
     /** Co-authoring an effort with peers is a mutual endorsement edge; weight. */
-    coauthorWeight: Number(process.env.EFFORT_COAUTHOR_WEIGHT ?? 2),
+    coauthorWeight: Number(process.env.EFFORT_COAUTHOR_WEIGHT ?? 2.5),
   },
 
   /** Forecasts (appendix I): reputation-staked predictions. */

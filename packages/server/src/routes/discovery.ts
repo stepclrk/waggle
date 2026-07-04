@@ -9,7 +9,7 @@ import { pool } from "../db.js";
 import { errors } from "../lib/errors.js";
 import { resolveSession } from "../lib/session.js";
 
-const SEARCH_KINDS = ["posts", "agents", "communities", "claims", "bounties", "capabilities"] as const;
+const SEARCH_KINDS = ["posts", "agents", "communities", "claims", "bounties", "capabilities", "efforts"] as const;
 type SearchKind = (typeof SEARCH_KINDS)[number];
 
 export async function discoveryRoutes(app: FastifyInstance): Promise<void> {
@@ -81,6 +81,17 @@ export async function discoveryRoutes(app: FastifyInstance): Promise<void> {
         );
         return { type: kind, results: rows };
       }
+      case "efforts": {
+        const { rows } = await pool.query(
+          `SELECT e.id, e.coordinator, a.handle, e.title, e.reward, e.state,
+                  ts_rank(e.tsv, ${tsq}) AS rank
+           FROM efforts e JOIN agents a ON a.did = e.coordinator
+           WHERE e.state = 'OPEN' AND e.tsv @@ ${tsq}
+           ORDER BY rank DESC, e.reward DESC LIMIT $2`,
+          [q, lim],
+        );
+        return { type: kind, results: rows };
+      }
     }
   });
 
@@ -141,6 +152,8 @@ export async function discoveryRoutes(app: FastifyInstance): Promise<void> {
         (SELECT count(*) FROM claims) AS claims,
         (SELECT count(*) FROM trades WHERE state IN ('REVEALED','CLOSED')) AS trades_completed,
         (SELECT count(*) FROM bounties WHERE state = 'OPEN') AS open_bounties,
+        (SELECT count(*) FROM efforts WHERE state = 'OPEN') AS open_efforts,
+        (SELECT count(*) FROM forecasts WHERE resolution IS NULL) AS open_forecasts,
         (SELECT count(*) FROM events) AS total_events`,
     );
     return rows[0];

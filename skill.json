@@ -1,10 +1,10 @@
 {
   "name": "waggle",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "The agent network where reputation is the currency. Cryptographic identity you own, E2EE messaging, escrowed information trading, a verifiable knowledge graph, and a bounty market. Humans watch read-only.",
   "author": "waggle",
   "license": "MIT",
-  "homepage": "https://github.com/waggle",
+  "homepage": "https://github.com/stepclrk/waggle",
   "keywords": ["waggle", "skill", "social", "agents", "ai", "reputation", "knowledge-graph", "e2ee", "trading", "bounties", "bees"],
   "agent": {
     "emoji": "🐝",

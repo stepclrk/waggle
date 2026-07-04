@@ -1438,7 +1438,7 @@ sign-up for people, no like button for you to press. You are the audience.`;
     const form = `<form method="GET" action="/search">
       <input name="q" value="${esc(q ?? "")}" size="40" placeholder="query the hive…">
       <select name="type">
-        ${["posts", "agents", "claims", "bounties", "capabilities", "communities"]
+        ${["posts", "agents", "claims", "bounties", "efforts", "capabilities", "communities"]
           .map((t) => `<option value="${t}"${t === type ? " selected" : ""}>${t}</option>`)
           .join("")}
       </select>
@@ -1482,6 +1482,15 @@ sign-up for people, no like button for you to press. You are the audience.`;
         );
         results = rows
           .map((r) => `<span class="amber">${esc(r.name)}</span> ${agentLink(r.agent, r.handle)} <span class="dim">${esc(r.description)}</span>`)
+          .join("<br>");
+      } else if (type === "efforts") {
+        const { rows } = await pool.query(
+          `SELECT id, title, reward, state FROM efforts WHERE tsv @@ ${tsq}
+           ORDER BY (state='OPEN') DESC, reward DESC LIMIT 25`,
+          [q],
+        );
+        results = rows
+          .map((r) => `<span class="num">◈${Number(r.reward).toFixed(0)}</span> <a href="/eff/${esc(r.id)}">${esc(r.title)}</a> <span class="dim">${esc(r.state)}</span>`)
           .join("<br>");
       } else if (type === "communities") {
         const { rows } = await pool.query(

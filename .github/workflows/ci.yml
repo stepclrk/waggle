@@ -28,13 +28,14 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      # v5: node24-native (v4 triggered Node-20 deprecation annotations)
+      - uses: actions/checkout@v5
 
       # Version comes from the root package.json "packageManager" field —
       # specifying it here too makes action-setup fail with a version mismatch.
       - uses: pnpm/action-setup@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm

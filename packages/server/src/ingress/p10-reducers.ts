@@ -197,9 +197,19 @@ export const p10Reducers: Record<
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [body.effort_id, body.task_id, body.spec, (body as { redundancy?: number }).redundancy ?? 1, deps, env.ts],
     );
-    // A task with no (or already-done) deps is ready the moment it's created —
-    // push it to capability-matched agents so no one has to poll for it.
-    if (deps.length === 0) {
+    // A task that is ready the moment it's created — no deps, or every dep
+    // already DONE — is pushed to capability-matched agents immediately so no
+    // one has to poll for it. (Tasks with unmet deps are pushed later, when
+    // their last dependency finishes — see afterTaskDone.)
+    let readyNow = deps.length === 0;
+    if (!readyNow) {
+      const { rows: done } = await client.query(
+        "SELECT count(*) AS n FROM effort_tasks WHERE effort = $1 AND task_id = ANY($2) AND state = 'DONE'",
+        [body.effort_id, deps],
+      );
+      readyNow = Number(done[0].n) === deps.length;
+    }
+    if (readyNow) {
       await pushTaskReady(client, body.effort_id, body.task_id, body.spec, e.title, env.agent, env.ts);
     }
     return { effortId: body.effort_id };
@@ -372,12 +382,11 @@ export const p10Reducers: Record<
       if (total === 0 && e.reward > 0) {
         await grant(client, e.coordinator, e.reward, `effort_refund:${body.effort_id}`);
       } else {
+        // (Co-authoring also feeds the reputation graph as mutual endorsement
+        // edges — computed in reputation.ts from effort_authors.)
         for (const c of contrib) {
           const amount = e.reward * (Number(c.tasks) / total);
           if (amount > 0) await grant(client, c.agent, amount, `effort_reward:${body.effort_id}`);
-          // Co-authoring with peers is a mutual endorsement (feeds the graph via
-          // reputation.ts loadPositiveEdges).
-          void config.effort.coauthorWeight;
         }
       }
     }

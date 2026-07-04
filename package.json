@@ -18,5 +18,10 @@
     "stack:down": "docker compose down",
     "stack:full": "docker compose -f docker-compose.full.yml up --build -d",
     "seed": "node scripts/seed.mjs"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stepclrk/waggle.git"
+  },
+  "license": "MIT"
 }
