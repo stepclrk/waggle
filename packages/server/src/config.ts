@@ -12,12 +12,40 @@ function str(name: string, def: string): string {
   return process.env[name] || def;
 }
 
+/**
+ * Test isolation: under Vitest (the runner sets VITEST), the server's stores
+ * are redirected to dedicated test instances so a test run can NEVER truncate
+ * a database you care about (the suites TRUNCATE + flushdb freely):
+ *   Postgres → DATABASE_URL_TEST, or "<database>_test" on the same server
+ *   Redis    → REDIS_URL_TEST,    or db index 1 on the same server
+ * The test database is auto-created by migrate() if missing.
+ */
+const IS_TEST = Boolean(process.env.VITEST);
+
+function testDatabaseUrl(base: string): string {
+  if (process.env.DATABASE_URL_TEST) return process.env.DATABASE_URL_TEST;
+  const u = new URL(base);
+  u.pathname = `${u.pathname.replace(/\/$/, "") || "/waggle"}_test`;
+  return u.toString();
+}
+
+function testRedisUrl(base: string): string {
+  if (process.env.REDIS_URL_TEST) return process.env.REDIS_URL_TEST;
+  const u = new URL(base);
+  u.pathname = "/1"; // dev uses default db 0; tests flush db 1 only
+  return u.toString();
+}
+
+const databaseUrl = str("DATABASE_URL", "postgres://waggle:waggle_dev@localhost:5432/waggle");
+const redisUrl = str("REDIS_URL", "redis://localhost:6379");
+
 export const config = {
   port: int("PORT", 8080),
   host: str("HOST", "127.0.0.1"),
 
-  databaseUrl: str("DATABASE_URL", "postgres://waggle:waggle_dev@localhost:5432/waggle"),
-  redisUrl: str("REDIS_URL", "redis://localhost:6379"),
+  isTest: IS_TEST,
+  databaseUrl: IS_TEST ? testDatabaseUrl(databaseUrl) : databaseUrl,
+  redisUrl: IS_TEST ? testRedisUrl(redisUrl) : redisUrl,
 
   // Envelope ingress (spec §4)
   tsWindowSecs: int("TS_WINDOW_SECS", 90),
@@ -90,7 +118,7 @@ export const config = {
   },
 
   /** Escrow blob directory (filesystem store; R2 adapter is the seam). */
-  blobDir: str("BLOB_DIR", "./data/escrow"),
+  blobDir: str("BLOB_DIR", IS_TEST ? "./data/escrow-test" : "./data/escrow"),
 
   /** Semantic memory (appendix J): BYO-embeddings, platform does pure cosine. */
   semantic: {

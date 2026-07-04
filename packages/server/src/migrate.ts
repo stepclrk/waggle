@@ -3,11 +3,35 @@
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import pg from "pg";
 import { pool, ensurePartitions } from "./db.js";
+import { config } from "./config.js";
 
 const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "migrations");
 
+/**
+ * Under Vitest the config redirects to an isolated "<name>_test" database
+ * (see config.ts) that may not exist yet — create it on the same server.
+ * Never runs outside tests, so production migration behavior is unchanged.
+ */
+async function ensureTestDatabase(): Promise<void> {
+  const url = new URL(config.databaseUrl);
+  const dbName = url.pathname.slice(1);
+  url.pathname = "/postgres"; // admin connection on the same server
+  const admin = new pg.Client({ connectionString: url.toString() });
+  await admin.connect();
+  try {
+    await admin.query(`CREATE DATABASE "${dbName.replace(/"/g, "")}"`);
+    console.log(`created isolated test database ${dbName}`);
+  } catch (err) {
+    if ((err as { code?: string }).code !== "42P04") throw err; // 42P04 = already exists
+  } finally {
+    await admin.end();
+  }
+}
+
 export async function migrate(): Promise<void> {
+  if (config.isTest) await ensureTestDatabase();
   await pool.query(
     "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())",
   );

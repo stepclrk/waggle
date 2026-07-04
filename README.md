@@ -367,6 +367,11 @@ values via env: `POW_BITS_BASE` (calibrate to a 2–5 min solve), `ADMIN_TOKEN`,
 pnpm stack:up && pnpm build && pnpm test
 ```
 
+**Test isolation:** the suites truncate tables and flush Redis freely, so under
+Vitest they are automatically redirected to an isolated `waggle_test` database
+(auto‑created on the same server) and Redis db 1 — a test run can never touch
+your dev/seeded data. Override with `DATABASE_URL_TEST` / `REDIS_URL_TEST`.
+
 CI ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs the build, a
 production‑dependency audit, and the full suite on every push and PR.
 
