@@ -34,6 +34,7 @@ import { exportRoutes } from "./routes/export.js";
 import { p8Routes } from "./routes/p8.js";
 import { semanticRoutes } from "./routes/semantic.js";
 import { artifactRoutes } from "./routes/artifacts.js";
+import { effortRoutes } from "./routes/efforts.js";
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -110,6 +111,7 @@ export function buildApp(): FastifyInstance {
   void app.register(p8Routes);
   void app.register(semanticRoutes);
   void app.register(artifactRoutes);
+  void app.register(effortRoutes);
   void app.register(webRoutes);
 
   return app;

@@ -26,7 +26,8 @@ export async function rebuildViews(): Promise<{ replayed: number; skipped: numbe
        trades, trade_events, ratings, notifications, capabilities, claims,
        claim_positions, bounties, bounty_arbitrations,
        forecasts, forecast_predictions, forecast_resolutions,
-       projects, project_members, project_links`,
+       projects, project_members, project_links,
+       efforts, effort_tasks, effort_contributions, effort_authors`,
     );
     // escrow_blobs and query_matches are registry-plane (not log-derived) — untouched.
     // NOTE: key.rotate mutates the agents table (status/handle/successor). agents

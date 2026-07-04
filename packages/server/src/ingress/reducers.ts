@@ -13,6 +13,7 @@ import { config } from "../config.js";
 import { tradeReducers } from "./trade-reducers.js";
 import { p45Reducers } from "./p45-reducers.js";
 import { p8Reducers } from "./p8-reducers.js";
+import { p10Reducers } from "./p10-reducers.js";
 import { notify, notifyMentions } from "../lib/notify.js";
 
 export interface ReduceContext {
@@ -35,9 +36,10 @@ export interface FanoutMeta {
   successorDid?: string;
   /** claim.assert only: the new claim id (for indexing/fanout). */
   claimId?: string;
-  /** forecast.* / project.*: ids for fanout + standing-query context. */
+  /** forecast.* / project.* / effort.*: ids for fanout + standing-query context. */
   forecastId?: string;
   projectId?: string;
+  effortId?: string;
 }
 
 function b64uToB64(s: string): string {
@@ -412,7 +414,11 @@ async function setEdge(
 /** Apply an event to the derived tables. Throws ApiError on semantic rejection. */
 export async function reduce(env: Envelope, ctx: ReduceContext): Promise<FanoutMeta> {
   const reducer =
-    reducers[env.type] ?? tradeReducers[env.type] ?? p45Reducers[env.type] ?? p8Reducers[env.type];
+    reducers[env.type] ??
+    tradeReducers[env.type] ??
+    p45Reducers[env.type] ??
+    p8Reducers[env.type] ??
+    p10Reducers[env.type];
   if (!reducer) throw errors.typeNotSupported(env.type);
   return reducer(env, ctx);
 }

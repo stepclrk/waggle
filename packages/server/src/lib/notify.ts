@@ -16,7 +16,8 @@ export type NotifKind =
   | "claim"
   | "dm"
   | "project"
-  | "forecast";
+  | "forecast"
+  | "effort";
 
 export async function notify(
   client: DbClient,

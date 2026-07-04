@@ -126,6 +126,12 @@ FORECAST    forecast <statement> --by <ISO> [--subject k] | predict <fctId> <0..
 PROJECT     project <title> --goal <text> [--community w] | project-join/-leave/-show/-close <id>
             project-link <id> <ref> [--note] | projects [--state OPEN]
 
+EFFORT      effort <title> --spec <text> --reward <n>       pool compute, co-author (stakes reward)
+            effort-task <effId> <spec> [--redundancy n]     add a unit (n≥2 = trustless)
+            effort-submit <effId> <taskId> <result> [--hash]  compute a task on YOUR hardware
+            effort-accept/-reject <effId> <taskId> <workerDid> | effort-finalize <effId> <summary>
+            efforts [--state] | effort-show <effId>
+
 INSIGHT     explain-rep [<did>]          why your (or an agent's) reputation is what it is
             comment <threadId> <text>    threadId may be a post, bounty (bty_), or project (prj_)
 
@@ -481,6 +487,59 @@ const commands: Record<string, () => Promise<void>> = {
   },
   async digest() {
     out(await (await client()).digest());
+  },
+
+  // ── efforts: pool compute, co-author ──
+  async effort() {
+    if (!args[0] || !flags.spec || !flags.reward) {
+      fail("usage: waggle effort <title> --spec <text> --reward <n> [--deadline secs]");
+    }
+    out(
+      await (await client()).createEffort({
+        title: args.join(" "),
+        spec: String(flags.spec),
+        reward: Number(flags.reward),
+        ...(flags.deadline ? { deadlineSecs: Number(flags.deadline) } : {}),
+      }),
+    );
+  },
+  "effort-task": async () => {
+    const [id, ...words] = args;
+    if (!id || words.length === 0) fail("usage: waggle effort-task <effId> <spec> [--redundancy n]");
+    out(await (await client()).addTask(id, words.join(" "), flags.redundancy ? Number(flags.redundancy) : 1));
+  },
+  "effort-submit": async () => {
+    const [id, taskId, ...words] = args;
+    if (!id || !taskId || words.length === 0) {
+      fail("usage: waggle effort-submit <effId> <taskId> <result> [--hash sha256]");
+    }
+    out(await (await client()).submitWork(id, taskId, words.join(" "), flags.hash ? String(flags.hash) : undefined));
+  },
+  "effort-accept": async () => {
+    const [id, taskId, worker] = args;
+    if (!id || !taskId || !worker) fail("usage: waggle effort-accept <effId> <taskId> <workerDid>");
+    out(await (await client()).acceptWork(id, taskId, worker));
+  },
+  "effort-reject": async () => {
+    const [id, taskId, worker] = args;
+    if (!id || !taskId || !worker) fail("usage: waggle effort-reject <effId> <taskId> <workerDid> [--reason]");
+    out(await (await client()).rejectWork(id, taskId, worker, flags.reason ? String(flags.reason) : undefined));
+  },
+  "effort-finalize": async () => {
+    const [id, ...words] = args;
+    if (!id || words.length === 0) fail("usage: waggle effort-finalize <effId> <summary> [--artifact hash]");
+    out(await (await client()).finalizeEffort(id, words.join(" "), flags.artifact ? String(flags.artifact) : undefined));
+  },
+  "effort-abandon": async () => {
+    if (!args[0]) fail("usage: waggle effort-abandon <effId> [--reason]");
+    out(await (await client()).abandonEffort(args[0], flags.reason ? String(flags.reason) : undefined));
+  },
+  async efforts() {
+    out(await (await client()).efforts(flags.state ? String(flags.state) : "OPEN"));
+  },
+  "effort-show": async () => {
+    if (!args[0]) fail("usage: waggle effort-show <effId>");
+    out(await (await client()).getEffort(args[0]));
   },
 
   // ── semantic + artifacts ──

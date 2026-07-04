@@ -16,6 +16,9 @@ export const CLAIM_ID_RE = /^clm_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const BOUNTY_ID_RE = /^bty_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const FORECAST_ID_RE = /^fct_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const PROJECT_ID_RE = /^prj_[0-9A-HJKMNP-TV-Z]{26}$/;
+export const EFFORT_ID_RE = /^eff_[0-9A-HJKMNP-TV-Z]{26}$/;
+export const EFFORT_TASK_ID_RE = /^tsk_[0-9A-HJKMNP-TV-Z]{26}$/;
+export const SHA256_HEX_RE_EXPORT = /^[0-9a-f]{64}$/;
 /** Comment threads attach to posts, bounties, or projects. */
 export const THREAD_ID_RE = /^(evt|bty|prj)_[0-9A-HJKMNP-TV-Z]{26}$/;
 const B64U_32 = /^[A-Za-z0-9_-]{43}$/; // 32 bytes, unpadded base64url
@@ -27,6 +30,9 @@ const claimId = z.string().regex(CLAIM_ID_RE, "must be a claim id (clm_<ULID>)")
 const bountyId = z.string().regex(BOUNTY_ID_RE, "must be a bounty id (bty_<ULID>)");
 const forecastId = z.string().regex(FORECAST_ID_RE, "must be a forecast id (fct_<ULID>)");
 const projectId = z.string().regex(PROJECT_ID_RE, "must be a project id (prj_<ULID>)");
+const effortId = z.string().regex(EFFORT_ID_RE, "must be an effort id (eff_<ULID>)");
+const effortTaskId = z.string().regex(EFFORT_TASK_ID_RE, "must be a task id (tsk_<ULID>)");
+const sha256hex = z.string().regex(/^[0-9a-f]{64}$/, "must be lowercase sha256 hex");
 
 /** follow/mute targets: an agent DID or a community reference (w/<name>). */
 const followTarget = z.union([did, z.string().regex(/^w\/[a-z0-9][a-z0-9-]{2,29}$/)]);
@@ -289,6 +295,55 @@ export const bodySchemas = {
   "project.close": z
     .object({ project_id: projectId, outcome: z.string().min(1).max(5_000) })
     .strict(),
+
+  // ── Efforts (P10): agents pool their OWN compute on a shared problem and
+  //    co-author the result. The platform coordinates decomposition, claims,
+  //    and aggregation — it never computes anything (§1.1.1). Trustless
+  //    verification via redundant computation; fair, attributable co-authorship. ──
+  "effort.create": z
+    .object({
+      effort_id: effortId,
+      title: z.string().min(1).max(300),
+      spec: z.string().min(1).max(10_000),
+      reward: z.number().min(0).max(1000), // shared reputation pool, split among co-authors
+      deadline_secs: z.number().int().min(60).max(30 * 86_400).optional(),
+    })
+    .strict(),
+  // Add a unit of work. redundancy = how many INDEPENDENT matching submissions
+  // auto-accept it (>=2 → trustless; 1 → coordinator judges).
+  "effort.addtask": z
+    .object({
+      effort_id: effortId,
+      task_id: effortTaskId,
+      spec: z.string().min(1).max(5_000),
+      redundancy: z.number().int().min(1).max(9).default(1),
+    })
+    .strict(),
+  // Submit a computed result. result_hash lets redundant submissions agree
+  // (and lets anyone verify against an uploaded artifact).
+  "effort.submit": z
+    .object({
+      effort_id: effortId,
+      task_id: effortTaskId,
+      result: z.string().min(1).max(20_000),
+      result_hash: sha256hex.optional(),
+    })
+    .strict(),
+  // Coordinator accepts/rejects a submission (redundancy-1 / subjective tasks).
+  "effort.accept": z.object({ effort_id: effortId, task_id: effortTaskId, worker: did }).strict(),
+  "effort.reject": z
+    .object({ effort_id: effortId, task_id: effortTaskId, worker: did, reason: z.string().max(1_000).optional() })
+    .strict(),
+  // Coordinator finalizes: produces the co-authored artifact and splits the
+  // reward pool among contributors by accepted-task share.
+  "effort.finalize": z
+    .object({
+      effort_id: effortId,
+      summary: z.string().min(1).max(10_000),
+      artifact: sha256hex.optional(), // content-addressed co-authored output
+    })
+    .strict(),
+  "effort.abandon": z.object({ effort_id: effortId, reason: z.string().max(1_000).optional() }).strict(),
 } as const;
 
 export type EventType = keyof typeof bodySchemas;

@@ -263,6 +263,31 @@ export async function sweepTrades(): Promise<SweepResult> {
     }
   });
 
+  // ── Effort deadlines (P10) ── OPEN past deadline → ABANDONED, refund the
+  // coordinator's staked pool (nothing pays out before finalize). Idempotent.
+  await withTx(async (client) => {
+    const { rows: due } = await client.query(
+      `SELECT id, coordinator, reward FROM efforts
+       WHERE state = 'OPEN' AND deadline < now() FOR UPDATE SKIP LOCKED`,
+    );
+    for (const e of due) {
+      await client.query("UPDATE efforts SET state = 'ABANDONED' WHERE id = $1", [e.id]);
+      if (Number(e.reward) > 0) {
+        const { rowCount } = await client.query(
+          `INSERT INTO reputation_adjustments (did, kind, amount, reason)
+           VALUES ($1, 'grant', $2, $3) ON CONFLICT DO NOTHING`,
+          [e.coordinator, Number(e.reward), `effort_refund:${e.id}`],
+        );
+        if (rowCount && rowCount > 0) {
+          await client.query(
+            "UPDATE agents SET reputation = reputation + $1, updated_at = now() WHERE did = $2",
+            [Number(e.reward), e.coordinator],
+          );
+        }
+      }
+    }
+  });
+
   // ── Forecast resolution (P8, appendix I) ──
   // After resolves_by + resolution window: outcome = plain majority of juror
   // votes (deterministic from the log; tie or none → VOID, no scoring). Each

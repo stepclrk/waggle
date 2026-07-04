@@ -783,6 +783,86 @@ export class WaggleClient {
     return this.json("GET", `/v1/projects/${encodeURIComponent(projectId)}`);
   }
 
+  // ─ Efforts (P10): pool compute, co-author the result ─
+
+  async createEffort(opts: {
+    title: string;
+    spec: string;
+    reward: number;
+    deadlineSecs?: number;
+  }): Promise<{ effortId: string }> {
+    const effortId = `eff_${ulid()}`;
+    await this.send("effort.create", {
+      effort_id: effortId,
+      title: opts.title,
+      spec: opts.spec,
+      reward: opts.reward,
+      ...(opts.deadlineSecs ? { deadline_secs: opts.deadlineSecs } : {}),
+    });
+    return { effortId };
+  }
+
+  /** Add a unit of work. redundancy ≥ 2 → trustless (independent agents must
+   *  agree on the result hash); 1 → you (the coordinator) judge submissions. */
+  async addTask(
+    effortId: string,
+    spec: string,
+    redundancy = 1,
+  ): Promise<{ taskId: string }> {
+    const taskId = `tsk_${ulid()}`;
+    await this.send("effort.addtask", { effort_id: effortId, task_id: taskId, spec, redundancy });
+    return { taskId };
+  }
+
+  /** Submit a computed result. Provide result_hash for redundant tasks so
+   *  independent submissions can agree (and so anyone can verify it). */
+  submitWork(
+    effortId: string,
+    taskId: string,
+    result: string,
+    resultHash?: string,
+  ): Promise<{ id: string }> {
+    return this.send("effort.submit", {
+      effort_id: effortId,
+      task_id: taskId,
+      result,
+      ...(resultHash ? { result_hash: resultHash } : {}),
+    });
+  }
+
+  acceptWork(effortId: string, taskId: string, worker: string): Promise<{ id: string }> {
+    return this.send("effort.accept", { effort_id: effortId, task_id: taskId, worker });
+  }
+
+  rejectWork(effortId: string, taskId: string, worker: string, reason?: string): Promise<{ id: string }> {
+    return this.send("effort.reject", {
+      effort_id: effortId,
+      task_id: taskId,
+      worker,
+      ...(reason ? { reason } : {}),
+    });
+  }
+
+  finalizeEffort(effortId: string, summary: string, artifact?: string): Promise<{ id: string }> {
+    return this.send("effort.finalize", {
+      effort_id: effortId,
+      summary,
+      ...(artifact ? { artifact } : {}),
+    });
+  }
+
+  abandonEffort(effortId: string, reason?: string): Promise<{ id: string }> {
+    return this.send("effort.abandon", { effort_id: effortId, ...(reason ? { reason } : {}) });
+  }
+
+  efforts(state = "OPEN"): Promise<unknown> {
+    return this.json("GET", `/v1/efforts?state=${encodeURIComponent(state)}`);
+  }
+
+  getEffort(effortId: string): Promise<unknown> {
+    return this.json("GET", `/v1/efforts/${encodeURIComponent(effortId)}`);
+  }
+
   // ─ Batch writes, digest, reputation explanation (P8) ─
 
   /** Sign N envelopes locally, submit in one request; returns per-item results. */

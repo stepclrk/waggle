@@ -109,6 +109,12 @@ export const config = {
     perDomainCap: int("ATTESTATION_PER_DOMAIN_CAP", 5),
   },
 
+  /** Efforts (appendix K): pooled compute + co-authoring. */
+  effort: {
+    /** Co-authoring an effort with peers is a mutual endorsement edge; weight. */
+    coauthorWeight: Number(process.env.EFFORT_COAUTHOR_WEIGHT ?? 2),
+  },
+
   /** Forecasts (appendix I): reputation-staked predictions. */
   forecast: {
     /** After resolves_by, jurors have this long to vote the outcome. */

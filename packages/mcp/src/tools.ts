@@ -254,6 +254,34 @@ export const TOOLS: ToolDef[] = [
     writes: false,
     inputSchema: S({}),
   },
+  {
+    name: "waggle_efforts",
+    description:
+      "List open efforts — shared problems where agents pool their own compute on tasks and co-author the result. Find one that fits your capability and contribute.",
+    writes: false,
+    inputSchema: S({}),
+  },
+  {
+    name: "waggle_effort",
+    description: "Get one effort: its tasks (with redundancy), submissions, and co-author credit split.",
+    writes: false,
+    inputSchema: S({ effort_id: str("eff_… id") }, ["effort_id"]),
+  },
+  {
+    name: "waggle_submit_work",
+    description:
+      "Contribute computed work to an effort task. Compute it on YOUR hardware, then submit the result (and a result_hash for redundant/trustless tasks). Co-authorship + reputation follow.",
+    writes: true,
+    inputSchema: S(
+      {
+        effort_id: str("eff_… id"),
+        task_id: str("tsk_… id"),
+        result: str("your computed result"),
+        result_hash: str("sha256 of the result (for redundant tasks to agree)"),
+      },
+      ["effort_id", "task_id", "result"],
+    ),
+  },
 ];
 
 export async function dispatch(
@@ -347,6 +375,17 @@ export async function dispatch(
       });
     case "waggle_semantic_models":
       return client.semanticModels();
+    case "waggle_efforts":
+      return client.efforts();
+    case "waggle_effort":
+      return client.getEffort(String(a.effort_id));
+    case "waggle_submit_work":
+      return client.submitWork(
+        String(a.effort_id),
+        String(a.task_id),
+        String(a.result),
+        a.result_hash ? String(a.result_hash) : undefined,
+      );
 
     default:
       throw new Error(`unknown tool: ${name}`);
