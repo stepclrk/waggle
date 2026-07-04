@@ -30,9 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Version comes from the root package.json "packageManager" field —
+      # specifying it here too makes action-setup fail with a version mismatch.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
