@@ -276,6 +276,11 @@ describe("live SSE standing-query push", () => {
 
 describe("rebuild equivalence with P8 (spec §7)", () => {
   it("replay + sweep reproduces forecasts, projects, and reputations", async () => {
+    // Settle every open forecast window FIRST, so no forecast crosses its
+    // resolves_by+window boundary between this snapshot and the rebuild's own
+    // sweep (that boundary-crossing is the only way the two can differ, and
+    // it's timing- not logic-dependent — it flaked on slow CI runners).
+    await new Promise((r) => setTimeout(r, 2_100));
     await sweepTrades();
     await computeReputation();
     const snap = async () => ({
