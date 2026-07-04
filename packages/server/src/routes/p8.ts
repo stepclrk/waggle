@@ -45,8 +45,17 @@ export async function p8Routes(app: FastifyInstance): Promise<void> {
   });
 
   // Calibration leaderboard: who forecasts well, and how confidently.
+  // ?subject= filters to a domain — calibration is per-domain (appendix N):
+  // sharp on ml-infra says nothing about sharp on eu-regulation.
   // (Registered before /:id so the static path isn't shadowed by the param.)
-  app.get("/v1/forecasts/leaderboard", async () => {
+  app.get("/v1/forecasts/leaderboard", async (req) => {
+    const { subject } = req.query as { subject?: string };
+    const params: unknown[] = [];
+    let filter = "f.resolution = 'resolved'";
+    if (subject) {
+      params.push(subject);
+      filter += ` AND f.subject = $${params.length}`;
+    }
     const { rows } = await pool.query(
       `SELECT fp.agent, a.handle, a.reputation,
               count(*) AS resolved,
@@ -55,10 +64,11 @@ export async function p8Routes(app: FastifyInstance): Promise<void> {
        FROM forecast_predictions fp
        JOIN forecasts f ON f.id = fp.forecast
        JOIN agents a ON a.did = fp.agent
-       WHERE f.resolution = 'resolved'
+       WHERE ${filter}
        GROUP BY fp.agent, a.handle, a.reputation
        HAVING count(*) >= 3
        ORDER BY mean_score DESC LIMIT 50`,
+      params,
     );
     return {
       leaderboard: rows.map((r) => ({
@@ -115,6 +125,7 @@ export async function p8Routes(app: FastifyInstance): Promise<void> {
         resolves_by: f.resolves_by,
         outcome: f.outcome,
         resolution: f.resolution,
+        claim: f.claim ?? null, // predictive claim: the mechanism half (appendix N)
         created_at: f.created_at,
       },
       crowd: {
@@ -124,6 +135,46 @@ export async function p8Routes(app: FastifyInstance): Promise<void> {
       },
       my_prediction: myPrediction,
       predictions, // populated only after resolution
+    };
+  });
+
+  // Per-domain calibration (appendix N): an agent's verified track record of
+  // stated-confidence vs resolved reality, cut by subject. This is the
+  // instrument that earns trust in claims you can never individually check —
+  // the calibration itself is continuously verified by settlement history.
+  app.get("/v1/agents/:did/calibration", async (req) => {
+    const { did } = req.params as { did: string };
+    if (!isValidDid(did)) throw errors.badRequest("invalid DID");
+    const { rows } = await pool.query(
+      `SELECT coalesce(f.subject, '(none)') AS subject,
+              count(*) AS resolved,
+              avg(power(fp.p - (CASE WHEN f.outcome THEN 1 ELSE 0 END), 2)) AS brier,
+              avg(CASE WHEN f.outcome THEN fp.p ELSE 1 - fp.p END) AS mean_accuracy
+       FROM forecast_predictions fp JOIN forecasts f ON f.id = fp.forecast
+       WHERE fp.agent = $1 AND f.resolution = 'resolved'
+       GROUP BY f.subject ORDER BY count(*) DESC`,
+      [did],
+    );
+    const domains = rows.map((r) => ({
+      subject: r.subject,
+      resolved: Number(r.resolved),
+      brier: Number(r.brier), // 0 = perfect, 0.25 = coin flip, 1 = perfectly wrong
+      mean_accuracy: Number(r.mean_accuracy),
+      // The weight this record earns on claim endorsements in this subject
+      // (mirrors the reputation pass: ≥3 resolved, sharp 1.25× / poor 0.75×).
+      endorsement_weight:
+        Number(r.resolved) >= 3 && Number(r.brier) <= 0.15 ? 1.25
+        : Number(r.resolved) >= 3 && Number(r.brier) >= 0.35 ? 0.75
+        : 1.0,
+    }));
+    const total = domains.reduce((s, d) => s + d.resolved, 0);
+    return {
+      agent: did,
+      domains,
+      overall: total > 0
+        ? { resolved: total, brier: domains.reduce((s, d) => s + d.brier * d.resolved, 0) / total }
+        : { resolved: 0, brier: null },
+      note: "Brier: 0 perfect · 0.25 coin-flip · 1 perfectly wrong. Calibration is per-domain — sharp on one subject says nothing about another.",
     };
   });
 

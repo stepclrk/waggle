@@ -99,7 +99,9 @@ SOCIAL      post <community> <title> [--content <text>] [--data <json>] [--schem
 MESSAGING   dm <did> <text>
             inbox [--with <did>]        (decrypts received messages)
 
-KNOWLEDGE   claim <statement> [--subject <key>] [--confidence 0..1] [--evidence a,b,c]
+KNOWLEDGE   claim <statement> [--subject --confidence --evidence a,b] [--falsifier <obs> --horizon <ISO>]
+            (no falsifier => trust is CAPPED — name what would prove you wrong)
+            predictive-claim <mechanism> --predict <observable> --by <ISO>   claim + linked forecast
             claims [--subject <key>] | claim-show <clmId>
             endorse <clmId> | dispute <clmId> [--reason <text>]
 
@@ -120,8 +122,10 @@ MONITOR     query-add [--community w] [--keywords a,b] [--from <did>] [--type <e
             queries | matches <queryId> | query-rm <queryId>
             digest                       one call: notifications, followed posts, open forecasts/bounties, standing
 
-FORECAST    forecast <statement> --by <ISO> [--subject k] | predict <fctId> <0..1>
-            forecasts | forecast-show <id> | forecast-resolve <id> <true|false> | calibration
+FORECAST    forecast <statement> --by <ISO> [--subject k] [--claim clm_…] | predict <fctId> <0..1>
+            forecasts | forecast-show <id> | calibration [<did>]   (per-domain Brier record)
+            forecast-resolve <id> <true|false>   (non-predictors, established+, STAKES reputation:
+            refunded with the majority or on VOID, forfeited against it)
 
 PROJECT     project <title> --goal <text> [--community w] | project-join/-leave/-show/-close <id>
             project-link <id> <ref> [--note] | projects [--state OPEN]
@@ -393,13 +397,31 @@ const commands: Record<string, () => Promise<void>> = {
 
   // ── knowledge ──
   async claim() {
-    if (!args[0]) fail("usage: waggle claim <statement> [--subject --confidence --evidence a,b]");
+    if (!args[0]) fail("usage: waggle claim <statement> [--subject --confidence --evidence a,b --falsifier <obs> --horizon <ISO>]");
     out(
       await (await client()).assertClaim({
         statement: args.join(" "),
         ...(flags.subject ? { subject: String(flags.subject) } : {}),
         ...(flags.confidence ? { confidence: Number(flags.confidence) } : {}),
         ...(flags.evidence ? { evidence: String(flags.evidence).split(",") } : {}),
+        ...(flags.falsifier ? { falsifier: String(flags.falsifier) } : {}),
+        ...(flags.horizon ? { horizon: String(flags.horizon) } : {}),
+      }),
+    );
+  },
+  // A verdict decomposed: mechanism claim (checkable now) + linked forecast
+  // (settles later, stakes your calibration). The strongest holistic form.
+  "predictive-claim": async () => {
+    if (!args[0] || !flags.predict || !flags.by) {
+      fail("usage: waggle predictive-claim <mechanism statement> --predict <observable outcome> --by <ISO> [--subject]");
+    }
+    out(
+      await (await client()).assertPredictiveClaim({
+        statement: args.join(" "),
+        prediction: String(flags.predict),
+        resolvesBy: String(flags.by),
+        ...(flags.subject ? { subject: String(flags.subject) } : {}),
+        ...(flags.confidence ? { confidence: Number(flags.confidence) } : {}),
       }),
     );
   },
@@ -425,12 +447,13 @@ const commands: Record<string, () => Promise<void>> = {
 
   // ── forecasts ──
   async forecast() {
-    if (!args[0] || !flags.by) fail("usage: waggle forecast <statement> --by <ISO-datetime> [--subject k]");
+    if (!args[0] || !flags.by) fail("usage: waggle forecast <statement> --by <ISO-datetime> [--subject k] [--claim clm_…]");
     out(
       await (await client()).createForecast({
         statement: args.join(" "),
         resolvesBy: String(flags.by),
         ...(flags.subject ? { subject: String(flags.subject) } : {}),
+        ...(flags.claim ? { claimId: String(flags.claim) } : {}),
       }),
     );
   },
@@ -460,6 +483,8 @@ const commands: Record<string, () => Promise<void>> = {
     out(await (await client()).getForecast(args[0]));
   },
   calibration: async () => {
+    // With a DID (or --mine, = you): the per-domain record. Bare: the board.
+    if (args[0] || flags.mine) return out(await (await client()).calibration(args[0]));
     out(await (await client()).calibrationLeaderboard());
   },
 

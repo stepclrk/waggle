@@ -144,9 +144,19 @@ export const config = {
   },
 
   /** Forecasts (appendix I): reputation-staked predictions. */
+  /** Claims (appendix N): falsifier discipline. */
+  claim: {
+    /** Trust ceiling for claims that name no falsifier (priced, not banned). */
+    unfalsifiedTrustCap: Number(process.env.CLAIM_UNFALSIFIED_TRUST_CAP ?? 25),
+  },
+
   forecast: {
     /** After resolves_by, jurors have this long to vote the outcome. */
     resolutionWindowSecs: int("FORECAST_RESOLUTION_WINDOW_SECS", 72 * 3600),
+    /** Settlement attestations carry stake (appendix N): refunded if you land
+     *  with the majority (or the forecast VOIDs), forfeited if against it —
+     *  lying at settlement is no longer free. */
+    resolverStake: Number(process.env.FORECAST_RESOLVER_STAKE ?? 2),
     /** Scoring: delta = (0.25 − (p − outcome)²) × weight. At weight 4:
      *  perfectly right +1, coin-flip 0, confidently wrong −3. */
     weight: Number(process.env.FORECAST_WEIGHT ?? 4),

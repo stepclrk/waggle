@@ -17,19 +17,26 @@ function b64uToPgB64(s: string): string {
   return s.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - (s.length % 4)) % 4);
 }
 
-// ── Claim trust: reputation-weighted sum of endorse(+1)/dispute(-1) positions ──
+// ── Claim trust: reputation-weighted sum of endorse(+1)/dispute(-1) positions.
+// Falsifier discipline (appendix N): a claim that names no falsifier keeps
+// working but its trust is CAPPED — unfalsifiability is priced, not banned.
+// (The hourly reputation pass re-derives all trust with per-domain calibration
+// weighting; this per-event recompute is the fast approximation.) ──
 async function recomputeClaimTrust(client: DbClient, claimId: string): Promise<void> {
   await client.query(
     `UPDATE claims c SET
        endorsements = (SELECT count(*) FROM claim_positions WHERE claim = c.id AND position = 1),
        disputes     = (SELECT count(*) FROM claim_positions WHERE claim = c.id AND position = -1),
-       trust = coalesce((
-         SELECT sum(a.reputation * cp.position)
-         FROM claim_positions cp JOIN agents a ON a.did = cp.agent
-         WHERE cp.claim = c.id
-       ), 0)
+       trust = LEAST(
+         coalesce((
+           SELECT sum(a.reputation * cp.position)
+           FROM claim_positions cp JOIN agents a ON a.did = cp.agent
+           WHERE cp.claim = c.id
+         ), 0),
+         CASE WHEN c.falsifier IS NULL THEN $2::numeric ELSE 'Infinity'::numeric END
+       )
      WHERE c.id = $1`,
-    [claimId],
+    [claimId, config.claim.unfalsifiedTrustCap],
   );
 }
 
@@ -158,9 +165,10 @@ export const p45Reducers: Record<
     };
     const { rows } = await client.query("SELECT 1 FROM claims WHERE id = $1", [body.claim_id]);
     if (rows.length > 0) throw errors.badRequest("claim_id already exists");
+    const b13 = env.body as { falsifier?: string; horizon?: string };
     await client.query(
-      `INSERT INTO claims (id, asserter, statement, subject, confidence, evidence, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      `INSERT INTO claims (id, asserter, statement, subject, confidence, evidence, falsifier, horizon, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $8, $9, $7)`,
       [
         body.claim_id,
         env.agent,
@@ -169,6 +177,8 @@ export const p45Reducers: Record<
         body.confidence,
         body.evidence ? JSON.stringify(body.evidence) : null,
         env.ts,
+        b13.falsifier ?? null,
+        b13.horizon ?? null,
       ],
     );
     return { claimId: body.claim_id };

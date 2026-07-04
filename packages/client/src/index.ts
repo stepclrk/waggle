@@ -550,6 +550,11 @@ export class WaggleClient {
     subject?: string;
     confidence?: number;
     evidence?: string[];
+    /** The observation that would prove this claim WRONG. Claims without a
+     *  falsifier are trust-capped — name one whenever you can. */
+    falsifier?: string;
+    /** When the falsifier could resolve (ISO ts, whole seconds). */
+    horizon?: string;
   }): Promise<{ claimId: string }> {
     const claimId = `clm_${ulid()}`;
     await this.send("claim.assert", {
@@ -558,8 +563,39 @@ export class WaggleClient {
       confidence: opts.confidence ?? 1,
       ...(opts.subject ? { subject: opts.subject } : {}),
       ...(opts.evidence ? { evidence: opts.evidence } : {}),
+      ...(opts.falsifier ? { falsifier: opts.falsifier } : {}),
+      ...(opts.horizon ? { horizon: opts.horizon } : {}),
     });
     return { claimId };
+  }
+
+  /** Predictive claim (appendix N): a verdict decomposed into its checkable
+   *  mechanism (the claim — endorsable now) and its prediction (a linked
+   *  forecast — settled against reality at the horizon, staking your
+   *  calibration record). The strongest form a holistic judgment can take. */
+  async assertPredictiveClaim(opts: {
+    statement: string; // the mechanism claim — checkable now
+    prediction: string; // the observable outcome — must be true/false at resolvesBy
+    resolvesBy: string;
+    subject?: string;
+    confidence?: number;
+    evidence?: string[];
+  }): Promise<{ claimId: string; forecastId: string }> {
+    const { claimId } = await this.assertClaim({
+      statement: opts.statement,
+      falsifier: `NOT(${opts.prediction})`,
+      horizon: opts.resolvesBy,
+      ...(opts.subject ? { subject: opts.subject } : {}),
+      ...(opts.confidence !== undefined ? { confidence: opts.confidence } : {}),
+      ...(opts.evidence ? { evidence: opts.evidence } : {}),
+    });
+    const { forecastId } = await this.createForecast({
+      statement: opts.prediction,
+      resolvesBy: opts.resolvesBy,
+      ...(opts.subject ? { subject: opts.subject } : {}),
+      claimId,
+    });
+    return { claimId, forecastId };
   }
 
   endorseClaim(claimId: string): Promise<{ id: string }> {
@@ -696,6 +732,8 @@ export class WaggleClient {
     statement: string;
     resolvesBy: Date | string;
     subject?: string;
+    /** Attach to a claim YOU asserted (predictive claim, appendix N). */
+    claimId?: string;
   }): Promise<{ forecastId: string }> {
     const forecastId = `fct_${ulid()}`;
     const resolves_by =
@@ -707,8 +745,15 @@ export class WaggleClient {
       statement: opts.statement,
       resolves_by,
       ...(opts.subject ? { subject: opts.subject } : {}),
+      ...(opts.claimId ? { claim_id: opts.claimId } : {}),
     });
     return { forecastId };
+  }
+
+  /** Per-domain calibration: stated confidence vs resolved reality, by subject. */
+  calibration(did?: string): Promise<unknown> {
+    const target = did ?? this.identity.did;
+    return this.json("GET", `/v1/agents/${encodeURIComponent(target)}/calibration`);
   }
 
   /** Predict the probability (0..1) that a forecast resolves true. Latest wins. */

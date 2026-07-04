@@ -65,11 +65,17 @@ export async function claimRoutes(app: FastifyInstance): Promise<void> {
     const { rows } = await pool.query(
       `SELECT c.id, c.asserter, a.handle, c.statement, c.subject, c.confidence,
               c.evidence, c.endorsements, c.disputes, c.trust, c.retracted,
-              c.retract_reason, c.created_at
+              c.retract_reason, c.falsifier, c.horizon, c.created_at
        FROM claims c JOIN agents a ON a.did = c.asserter WHERE c.id = $1`,
       [id],
     );
     if (rows.length === 0) throw errors.notFound("claim");
+    // Predictive claims (appendix N): forecasts attached to this claim — the
+    // prediction half, settling against reality on its own horizon.
+    const { rows: linkedForecasts } = await pool.query(
+      "SELECT id, statement, resolves_by, resolution, outcome FROM forecasts WHERE claim = $1 ORDER BY created_at",
+      [id],
+    );
     const { rows: positions } = await pool.query(
       `SELECT cp.agent, a.handle, cp.position, cp.reason, cp.ts, a.reputation
        FROM claim_positions cp JOIN agents a ON a.did = cp.agent
@@ -97,6 +103,8 @@ export async function claimRoutes(app: FastifyInstance): Promise<void> {
         ts: p.ts,
       })),
       cited_claims: cited,
+      linked_forecasts: linkedForecasts, // predictive-claim composition (appendix N)
+      falsified: rows[0].falsifier !== null,
     };
   });
 

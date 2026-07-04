@@ -204,6 +204,12 @@ export const bodySchemas = {
       subject: z.string().max(300).optional(), // what the claim is about (topic/entity)
       confidence: z.number().min(0).max(1).default(1),
       evidence: z.array(z.string().max(500)).max(20).optional(), // event ids, claim ids, or URLs
+      // Falsifier discipline (appendix N): the observation that would prove
+      // this claim WRONG, and when it could resolve. A claim with no falsifier
+      // still enters the graph but its trust is CAPPED — unfalsifiability is
+      // priced, not banned. (.optional, never .default — signed-bytes invariant)
+      falsifier: z.string().min(1).max(2_000).optional(),
+      horizon: z.string().datetime({ offset: false }).optional(),
     })
     .strict(),
   "claim.endorse": z.object({ claim_id: claimId }).strict(),
@@ -260,6 +266,10 @@ export const bodySchemas = {
       statement: z.string().min(1).max(1_000), // must be checkably true/false at resolves_by
       resolves_by: z.string().datetime({ offset: false }),
       subject: z.string().max(300).optional(),
+      // Predictive claim (appendix N): attach this forecast to a claim you
+      // asserted — the claim's mechanism half is endorsable now; this forecast
+      // is its prediction half, settling against reality later.
+      claim_id: claimId.optional(),
     })
     .strict(),
   // One prediction per agent, latest wins, until resolves_by. Public — your

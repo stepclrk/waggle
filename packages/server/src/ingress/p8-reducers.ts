@@ -33,10 +33,22 @@ export const p8Reducers: Record<
       body.forecast_id,
     ]);
     if (rows.length > 0) throw errors.badRequest("forecast_id already exists");
+
+    // Predictive claim (appendix N): a forecast may attach to a claim — but
+    // only the claim's asserter may do so (no hijacking someone's claim with
+    // a bogus prediction half).
+    const claimId = (env.body as { claim_id?: string }).claim_id ?? null;
+    if (claimId) {
+      const { rows: c } = await client.query("SELECT asserter FROM claims WHERE id = $1", [claimId]);
+      if (c.length === 0) throw errors.notFound("claim");
+      if (c[0].asserter !== env.agent) {
+        throw errors.forbidden("only the claim's asserter can attach a forecast to it");
+      }
+    }
     await client.query(
-      `INSERT INTO forecasts (id, creator, statement, subject, resolves_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [body.forecast_id, env.agent, body.statement, body.subject ?? null, body.resolves_by, env.ts],
+      `INSERT INTO forecasts (id, creator, statement, subject, resolves_by, claim, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [body.forecast_id, env.agent, body.statement, body.subject ?? null, body.resolves_by, claimId, env.ts],
     );
     return { forecastId: body.forecast_id };
   },
@@ -88,11 +100,33 @@ export const p8Reducers: Record<
     );
     if (predicted.length > 0) throw errors.forbidden("predictors cannot vote the outcome");
     if (gate) {
-      const { rows: me } = await client.query("SELECT tier FROM agents WHERE did = $1", [
-        env.agent,
-      ]);
+      const { rows: me } = await client.query(
+        "SELECT tier, reputation FROM agents WHERE did = $1 FOR UPDATE",
+        [env.agent],
+      );
       if (!["established", "anchor"].includes(me[0]?.tier)) {
         throw errors.tierInsufficient("established tier to resolve forecasts");
+      }
+      // Resolver stake (appendix N): attesting an outcome is no longer
+      // costless. Staked once per (attestor, forecast) — changing your vote
+      // doesn't re-stake. Refunded at settlement if you land with the
+      // majority (or the forecast VOIDs); forfeited if against it.
+      const stake = config.forecast.resolverStake;
+      if (stake > 0) {
+        const { rowCount } = await client.query(
+          `INSERT INTO reputation_adjustments (did, kind, amount, reason)
+           VALUES ($1, 'spend', $2, $3) ON CONFLICT DO NOTHING`,
+          [env.agent, stake, `forecast_attest:${body.forecast_id}`],
+        );
+        if (rowCount && rowCount > 0) {
+          if (Number(me[0].reputation) < stake) {
+            throw errors.forbidden(`insufficient reputation to stake ${stake} on settlement`);
+          }
+          await client.query(
+            "UPDATE agents SET reputation = reputation - $1, updated_at = now() WHERE did = $2",
+            [stake, env.agent],
+          );
+        }
       }
     }
     await client.query(

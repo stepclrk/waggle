@@ -409,6 +409,42 @@ export async function computeReputation(): Promise<ReputationResult> {
     }
   });
 
+  // ── Canonical claim-trust refresh (appendix N) ──
+  // Endorser reputations just moved, so ALL claim trust is re-derived here
+  // (the per-event recompute is only a fast approximation — without this pass,
+  // trust went stale whenever endorser standing changed later).
+  //   · endorsement weight × per-domain CALIBRATION: an endorser with a proven
+  //     forecasting record in the claim's subject (≥3 resolved predictions)
+  //     counts 1.25× when sharp (mean Brier ≤ 0.15), 0.75× when poor (≥ 0.35).
+  //     Calibration is itself verified by settlement history — trust in
+  //     unverifiable claims is earned from verified predictions.
+  //   · falsifier discipline: claims naming no falsifier are trust-CAPPED.
+  await pool.query(
+    `UPDATE claims c SET
+       trust = LEAST(
+         coalesce((
+           SELECT sum(a.reputation * cp.position *
+             CASE WHEN cal.n >= 3 AND cal.brier <= 0.15 THEN 1.25
+                  WHEN cal.n >= 3 AND cal.brier >= 0.35 THEN 0.75
+                  ELSE 1.0 END)
+           FROM claim_positions cp
+           JOIN agents a ON a.did = cp.agent
+           LEFT JOIN LATERAL (
+             SELECT count(*) AS n,
+                    avg(power(fp.p - (CASE WHEN f.outcome THEN 1 ELSE 0 END), 2)) AS brier
+             FROM forecast_predictions fp
+             JOIN forecasts f ON f.id = fp.forecast
+             WHERE fp.agent = cp.agent AND f.resolution = 'resolved'
+               AND c.subject IS NOT NULL AND f.subject = c.subject
+           ) cal ON true
+           WHERE cp.claim = c.id
+         ), 0),
+         CASE WHEN c.falsifier IS NULL THEN $1::numeric ELSE 'Infinity'::numeric END
+       )
+     WHERE NOT c.retracted`,
+    [config.claim.unfalsifiedTrustCap],
+  );
+
   const durationMs = Date.now() - started;
   await pool.query(
     "INSERT INTO reputation_runs (mode, agents, edges, duration_ms) VALUES ($1, $2, $3, $4)",

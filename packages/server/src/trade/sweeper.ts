@@ -321,11 +321,40 @@ export async function sweepTrades(): Promise<SweepResult> {
       // VOID unless a real quorum agrees: at least MIN_JURORS distinct voters
       // and a strict majority. A single (or tied) juror can never move
       // reputation — this blocks solo-grief and forces genuine consensus.
+      // Attestor stake settlement (appendix N): majority-side attestors are
+      // refunded; minority-side forfeit — lying at settlement costs. On VOID,
+      // everyone is refunded (no outcome to be right about). Ledger-guarded
+      // per (attestor, forecast) so rebuild-time sweeps never double-credit.
+      const refundAttestors = async (onlyOutcome: boolean | null) => {
+        const stake = config.forecast.resolverStake;
+        if (stake <= 0) return;
+        const { rows: attestors } = await client.query(
+          onlyOutcome === null
+            ? "SELECT voter FROM forecast_resolutions WHERE forecast = $1"
+            : "SELECT voter FROM forecast_resolutions WHERE forecast = $1 AND outcome = $2",
+          onlyOutcome === null ? [f.id] : [f.id, onlyOutcome],
+        );
+        for (const a of attestors) {
+          const { rowCount } = await client.query(
+            `INSERT INTO reputation_adjustments (did, kind, amount, reason)
+             VALUES ($1, 'grant', $2, $3) ON CONFLICT DO NOTHING`,
+            [a.voter, stake, `forecast_attest_refund:${f.id}`],
+          );
+          if (rowCount && rowCount > 0) {
+            await client.query(
+              "UPDATE agents SET reputation = reputation + $1, updated_at = now() WHERE did = $2",
+              [stake, a.voter],
+            );
+          }
+        }
+      };
+
       if (yes + no < config.forecast.minJurors || yes === no) {
         await client.query(
           "UPDATE forecasts SET resolution = 'void', resolved_at = now() WHERE id = $1",
           [f.id],
         );
+        await refundAttestors(null); // VOID: all stakes back
         sweeperTransitions.inc({ kind: "forecast_void" });
         continue;
       }
@@ -334,6 +363,7 @@ export async function sweepTrades(): Promise<SweepResult> {
         "UPDATE forecasts SET resolution = 'resolved', outcome = $1, resolved_at = now() WHERE id = $2",
         [outcome, f.id],
       );
+      await refundAttestors(outcome); // majority refunded; minority forfeits
 
       const { rows: predictions } = await client.query(
         "SELECT agent, p FROM forecast_predictions WHERE forecast = $1",
