@@ -29,6 +29,65 @@ async function lockEffort(
 }
 
 /**
+ * Push work to the agents equipped for it: notify capability-matched agents
+ * that a task is ready (newly created unblocked, or newly unblocked because
+ * its last dependency finished). Matching = a capability NAME appearing in the
+ * task/effort text; recipients are ordered by DID and capped, so the set is
+ * DETERMINISTIC under rebuild (capabilities are themselves projections of the
+ * log, so replay sees the same registry state at the same point).
+ */
+async function pushTaskReady(
+  client: DbClient,
+  effortId: string,
+  taskId: string,
+  taskSpec: string,
+  effortTitle: string,
+  coordinator: string,
+  ts: string,
+): Promise<void> {
+  const hay = `${taskSpec} ${effortTitle}`.toLowerCase();
+  const { rows } = await client.query(
+    `SELECT DISTINCT c.agent FROM capabilities c JOIN agents a ON a.did = c.agent
+     WHERE a.status = 'active' AND c.agent <> $1
+       AND length(c.name) > 3 AND position(lower(c.name) IN $2) > 0
+     ORDER BY c.agent LIMIT 10`,
+    [coordinator, hay],
+  );
+  for (const r of rows) {
+    await notify(client, r.agent, "effort", coordinator, effortId,
+      `task ready for your capability: "${taskSpec.slice(0, 120)}" (${taskId})`, ts);
+  }
+}
+
+/**
+ * After a task transitions to DONE: any OPEN dependent whose dependencies are
+ * now ALL done has just unblocked — push it to capability-matched agents.
+ */
+async function afterTaskDone(
+  client: DbClient,
+  effortId: string,
+  doneTaskId: string,
+  effortTitle: string,
+  coordinator: string,
+  ts: string,
+): Promise<void> {
+  const { rows: unblocked } = await client.query(
+    `SELECT t.task_id, t.spec FROM effort_tasks t
+     WHERE t.effort = $1 AND t.state = 'OPEN' AND $2 = ANY(t.deps)
+       AND NOT EXISTS (
+         SELECT 1 FROM unnest(t.deps) d
+         LEFT JOIN effort_tasks dt ON dt.effort = t.effort AND dt.task_id = d
+         WHERE dt.state IS DISTINCT FROM 'DONE'
+       )
+     ORDER BY t.task_id`,
+    [effortId, doneTaskId],
+  );
+  for (const t of unblocked) {
+    await pushTaskReady(client, effortId, t.task_id, t.spec, effortTitle, coordinator, ts);
+  }
+}
+
+/**
  * A task is workable only if it exists, is still OPEN, and every dependency it
  * declares is DONE (the DAG gate). Returns the task's redundancy.
  */
@@ -138,6 +197,11 @@ export const p10Reducers: Record<
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [body.effort_id, body.task_id, body.spec, (body as { redundancy?: number }).redundancy ?? 1, deps, env.ts],
     );
+    // A task with no (or already-done) deps is ready the moment it's created —
+    // push it to capability-matched agents so no one has to poll for it.
+    if (deps.length === 0) {
+      await pushTaskReady(client, body.effort_id, body.task_id, body.spec, e.title, env.agent, env.ts);
+    }
     return { effortId: body.effort_id };
   },
 
@@ -231,6 +295,8 @@ export const p10Reducers: Record<
           "UPDATE effort_tasks SET state = 'DONE', accepted_hash = $3 WHERE effort = $1 AND task_id = $2",
           [body.effort_id, body.task_id, body.result_hash],
         );
+        // This task just finished — push any newly-unblocked dependents.
+        await afterTaskDone(client, body.effort_id, body.task_id, e.title, e.coordinator, env.ts);
       }
     }
     await notify(client, e.coordinator, "effort", env.agent, body.effort_id, `submission on "${e.title}"`, env.ts);
@@ -255,6 +321,8 @@ export const p10Reducers: Record<
       "UPDATE effort_tasks SET state = 'DONE', accepted_hash = $3 WHERE effort = $1 AND task_id = $2",
       [body.effort_id, body.task_id, rows[0].result_hash],
     );
+    // This task just finished — push any newly-unblocked dependents.
+    await afterTaskDone(client, body.effort_id, body.task_id, e.title, e.coordinator, env.ts);
     await notify(client, body.worker, "effort", env.agent, body.effort_id, `work accepted on "${e.title}"`, env.ts);
     return { effortId: body.effort_id };
   },

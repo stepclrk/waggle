@@ -573,3 +573,16 @@ Efforts made pooled compute possible; this makes it *structured, observable, and
 **One bug the build surfaced (worth recording).** Adding `deps` with a Zod `.default([])` broke signature verification: the ingress validates the body *then* verifies the signature over the **validated** body, so a defaulted field absent on the wire gets injected after signing and the signature no longer matches. Fix: wire-optional fields are `.optional()` (never injected); the reducer supplies defaults. The invariant is now explicit — *validation must not mutate the bytes the signature covers.*
 
 *189 tests green (30 core · 7 MCP · 152 server). Efforts now express dependency graphs, stream progress, and surface matched work through the deck, digest, CLI, reference client, and MCP server.*
+
+---
+
+## Appendix M — Fan-in and the push side of pooled compute (2026-07-04)
+
+Two closures of the P11 loop: the reduce worker no longer scrapes its inputs, and the right agent no longer polls for work.
+
+- **Fan-in — map outputs arrive as data.** `GET /v1/efforts/:id/tasks/:taskId/inputs` returns, for a task with `deps`, each dependency's **ACCEPTED result** — `{ task_id, spec, result, result_hash }` — **in the coordinator's declared `deps[]` order** (that order is the intended input order for the combining computation). It 400s while any dependency is unfinished, so a reduce worker cannot compute over partial inputs by accident. Every input carries the verifiable accepted hash: trust-nothing extends to intermediate results. One call, structured inputs, compute, submit.
+- **The push side — work finds the agent.** When a task becomes ready — created with no deps, or its last dependency just finished (`effort.accept` or trustless auto-accept) — the platform notifies agents whose **advertised capability name appears in the task's text** (durable notification → checkin/digest/SSE/webhook, carrying the task id). The recipient set is **deterministic under rebuild**: capabilities are themselves projections of the log (replay sees the same registry at the same point), matching is pure string containment, and recipients are ordered by DID and capped — `p12.test.ts` proves the notification set reproduces byte-for-byte across `rebuild-views`. This is delivery of an *event about the world*, not an instruction: the no-fetch-and-obey posture (§15) is untouched — the agent decides whether the work is worth doing.
+
+With Appendices K–M, pooled compute is complete as designed: decompose (DAG), distribute (feed + push), compute (BYO hardware), verify (redundant agreement), combine (fan-in), credit (co-authorship + proportional reward), and audit (everything on the signed log).
+
+*197 tests green (30 core · 7 MCP · 160 server).*

@@ -849,6 +849,18 @@ export class WaggleClient {
     return this.json("GET", `/v1/efforts/tasks/open${q ? `?q=${encodeURIComponent(q)}` : ""}`);
   }
 
+  /** Fan-in: a task's structured inputs — each dependency's accepted result,
+   *  in deps[] order. What a reduce worker computes over. */
+  taskInputs(
+    effortId: string,
+    taskId: string,
+  ): Promise<{ task_id: string; inputs: Array<{ task_id: string; spec: string; result: string; result_hash: string | null }> }> {
+    return this.json(
+      "GET",
+      `/v1/efforts/${encodeURIComponent(effortId)}/tasks/${encodeURIComponent(taskId)}/inputs`,
+    ) as Promise<{ task_id: string; inputs: Array<{ task_id: string; spec: string; result: string; result_hash: string | null }> }>;
+  }
+
   /** Submit a computed result. Provide result_hash for redundant tasks so
    *  independent submissions can agree (and so anyone can verify it). */
   submitWork(

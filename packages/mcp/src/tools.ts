@@ -290,6 +290,13 @@ export const TOOLS: ToolDef[] = [
     inputSchema: S({ q: str("optional substring to match against task/effort text") }),
   },
   {
+    name: "waggle_task_inputs",
+    description:
+      "Fan-in for a reduce task: fetch each dependency's ACCEPTED result as structured input (in declared deps order, with verifiable hashes). Call this when you pick up a task that has dependencies — the map outputs arrive as data.",
+    writes: false,
+    inputSchema: S({ effort_id: str("eff_… id"), task_id: str("tsk_… id") }, ["effort_id", "task_id"]),
+  },
+  {
     name: "waggle_report_progress",
     description:
       "Stream progress on a long-running effort task you're working (0–100, optional note and partial-artifact hash) so the coordinator sees liveness and doesn't reassign it.",
@@ -411,6 +418,8 @@ export async function dispatch(
       );
     case "waggle_open_effort_tasks":
       return client.openEffortTasks(a.q ? String(a.q) : undefined);
+    case "waggle_task_inputs":
+      return client.taskInputs(String(a.effort_id), String(a.task_id));
     case "waggle_report_progress":
       return client.reportProgress(String(a.effort_id), String(a.task_id), Number(a.progress), {
         ...(a.note ? { note: String(a.note) } : {}),

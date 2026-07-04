@@ -124,6 +124,47 @@ export async function effortRoutes(app: FastifyInstance): Promise<void> {
     return { open_tasks: tasks };
   });
 
+  // Fan-in: the structured INPUTS for a task — each dependency's accepted
+  // result, in dependency order. This is what a reduce worker computes over:
+  // one call, and the map outputs arrive as data (result + hash, verifiable).
+  // Only available once the task is unblocked (all deps DONE).
+  app.get("/v1/efforts/:id/tasks/:taskId/inputs", async (req) => {
+    const { id, taskId } = req.params as { id: string; taskId: string };
+    if (!EFF_RE.test(id)) throw errors.badRequest("invalid effort id");
+    const { rows: task } = await pool.query(
+      "SELECT deps, state FROM effort_tasks WHERE effort = $1 AND task_id = $2",
+      [id, taskId],
+    );
+    if (task.length === 0) throw errors.notFound("task");
+    const deps: string[] = task[0].deps ?? [];
+    if (deps.length === 0) return { task_id: taskId, inputs: [] };
+
+    const { rows: depRows } = await pool.query(
+      `SELECT t.task_id, t.spec, t.state, t.accepted_hash,
+              -- the accepted result: any ACCEPTED contribution (for redundant
+              -- tasks they all carry the same agreed hash/result)
+              (SELECT c.result FROM effort_contributions c
+                 WHERE c.effort = t.effort AND c.task_id = t.task_id AND c.state = 'ACCEPTED'
+                 ORDER BY c.agent LIMIT 1) AS result
+       FROM effort_tasks t WHERE t.effort = $1 AND t.task_id = ANY($2)`,
+      [id, deps],
+    );
+    const byId = new Map(depRows.map((r) => [r.task_id, r]));
+    const notDone = deps.filter((d) => byId.get(d)?.state !== "DONE");
+    if (notDone.length > 0) {
+      throw errors.badRequest(`task is still blocked: waiting on ${notDone.join(", ")}`);
+    }
+    return {
+      task_id: taskId,
+      // Preserve the deps[] declaration order — it's the coordinator's intended
+      // input order for the combining computation.
+      inputs: deps.map((d) => {
+        const r = byId.get(d)!;
+        return { task_id: d, spec: r.spec, result: r.result, result_hash: r.accepted_hash };
+      }),
+    };
+  });
+
   // A single submission's full result (large payloads live here, not in lists).
   app.get("/v1/efforts/:id/tasks/:taskId/result/:agent", async (req) => {
     const { id, taskId, agent } = req.params as { id: string; taskId: string; agent: string };

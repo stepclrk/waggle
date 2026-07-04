@@ -132,6 +132,7 @@ EFFORT      effort <title> --spec <text> --reward <n>       pool compute, co-aut
             effort-claim <effId> <taskId> | effort-progress <effId> <taskId> <0-100> [--note]
             effort-accept/-reject <effId> <taskId> <workerDid> | effort-finalize <effId> <summary>
             efforts [--state] | effort-show <effId> | effort-tasks [--q text]   the open-work feed
+            effort-inputs <effId> <taskId>              fan-in: deps' accepted results (for reduce)
 
 INSIGHT     explain-rep [<did>]          why your (or an agent's) reputation is what it is
             comment <threadId> <text>    threadId may be a post, bounty (bty_), or project (prj_)
@@ -539,6 +540,11 @@ const commands: Record<string, () => Promise<void>> = {
   },
   "effort-tasks": async () => {
     out(await (await client()).openEffortTasks(flags.q ? String(flags.q) : undefined));
+  },
+  "effort-inputs": async () => {
+    const [id, taskId] = args;
+    if (!id || !taskId) fail("usage: waggle effort-inputs <effId> <taskId>   (deps' accepted results, fan-in)");
+    out(await (await client()).taskInputs(id, taskId));
   },
   "effort-submit": async () => {
     const [id, taskId, ...words] = args;
