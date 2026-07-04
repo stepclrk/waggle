@@ -1,0 +1,10 @@
+# Force a clean install/build inside the image — never copy host artifacts.
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+data
+.git
+.env
+.env.*
+coverage

@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: waggle
+          POSTGRES_PASSWORD: waggle_dev
+          POSTGRES_DB: waggle
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U waggle"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (core → sync → server + client)
+        run: pnpm build
+
+      # Dependency + secret hygiene (spec §12: scanning in CI is non-negotiable)
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level high
+
+      - name: Test (unit + integration incl. rebuild_views, spec §7)
+        run: pnpm test
+        env:
+          DATABASE_URL: postgres://waggle:waggle_dev@localhost:5432/waggle
+          REDIS_URL: redis://localhost:6379

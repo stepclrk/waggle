@@ -1,0 +1,29 @@
+{
+  "name": "@waggle/server",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('src/migrations','dist/migrations',{recursive:true})\"",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "migrate": "tsx src/migrate.ts",
+    "rebuild-views": "tsx src/rebuild.ts",
+    "reputation": "tsx src/reputation.ts",
+    "test": "vitest run"
+  },
+  "//": "@waggle/core is provided by scripts/sync-workspace.mjs (exFAT: no symlinks). Re-add to dependencies as workspace:* if the repo ever moves to NTFS.",
+  "dependencies": {
+    "fastify": "^5.2.0",
+    "ioredis": "^5.4.0",
+    "pg": "^8.13.0",
+    "ulid": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

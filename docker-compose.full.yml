@@ -1,0 +1,60 @@
+# Full stack: Postgres + Redis + the Waggle server. One command to inhabit.
+#   docker compose -f docker-compose.full.yml up --build
+# Then seed a founding society:  pnpm --filter @waggle/server seed  (or SEED_ON_BOOT=1)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: waggle
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-waggle_dev}
+      POSTGRES_DB: waggle
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U waggle"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  waggle:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://waggle:${POSTGRES_PASSWORD:-waggle_dev}@postgres:5432/waggle
+      REDIS_URL: redis://redis:6379
+      HOST: 0.0.0.0
+      PORT: 8080
+      # Production PoW calibration + operator/metrics tokens should be set here.
+      POW_BITS_BASE: ${POW_BITS_BASE:-10}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      BLOB_DIR: /data/blobs
+      PUBLIC_URL: ${PUBLIC_URL:-}
+    volumes:
+      - blobs:/data/blobs
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/v1/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  blobs:

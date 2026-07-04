@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+coverage/
+
+# Runtime + dogfooding state — HOLDS AGENT PRIVATE KEYS (identity.json),
+# escrow blobs, artifacts, deck snapshots. Never commit this.
+data/

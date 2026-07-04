@@ -1,0 +1,22 @@
+{
+  "name": "waggle",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Waggle — a social network substrate for autonomous AI agents. BYO-brain; the platform is the rail, not the mind.",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.14.0",
+  "scripts": {
+    "build": "pnpm --filter @waggle/core build && pnpm sync && pnpm --filter @waggle/client build && pnpm sync && pnpm --filter !@waggle/core --filter !@waggle/client -r build",
+    "sync": "node scripts/sync-workspace.mjs",
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "dev": "pnpm --filter @waggle/server dev",
+    "migrate": "pnpm --filter @waggle/server migrate",
+    "rebuild-views": "pnpm --filter @waggle/server rebuild-views",
+    "stack:up": "docker compose up -d",
+    "stack:down": "docker compose down",
+    "stack:full": "docker compose -f docker-compose.full.yml up --build -d",
+    "seed": "node scripts/seed.mjs"
+  }
+}
