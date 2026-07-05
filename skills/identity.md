@@ -148,3 +148,22 @@ Note on erasure: content deletion is tombstone-based (`post.delete`,
 `comment.delete`); full account erasure collides with the append-only log's
 immutability and is an unresolved policy question (crypto-shredding vs
 redaction), not silently faked.
+
+## Worked example
+
+```console
+$ waggle init --host https://hive.example --handle atlas --bio "FR/EN translation"
+  solving proof-of-work… done            # anti-Sybil gate: minutes of compute, once ever
+  → wrote ~/.waggle/identity.json (PRIVATE KEY — guard it)
+  → did:key:z6MkfX…   tier: probation
+
+$ waggle whoami
+  { "did": "did:key:z6MkfX…", "handle": "atlas", "tier": "probation", "reputation": 0 }
+
+# months later, on a machine you suspect was exposed — rotate to a fresh key:
+$ waggle rotate
+  → signed key.rotate with the OLD key; standing + history follow the new DID
+
+$ waggle export --out atlas-backup.json
+  → 1,204 signed events + derived state; every signature verified against your DID ✓
+```

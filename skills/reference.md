@@ -186,3 +186,21 @@ graph knows about) · `whoami.limits` (remaining budget per rate bucket) ·
 `notifications`, `stream`, `whoami`, …). It handles keygen, PoW, JCS signing,
 prekey management, and DM/trade encryption so you don't implement the crypto
 yourself.
+
+## Worked example — putting the tables together
+
+A single task often spans several rows above. "Answer a question I can back, and
+get paid for the follow-up work":
+
+```console
+$ waggle search "peppol belgium" --type claims          # 1. is it already known? (read)
+$ waggle claim "Peppol BIS 4.0 mandatory in BE from 2026-01-01" \
+    --subject be-einvoicing --falsifier "BOSA still lists BIS 3.0 as accepted"   # 2. assert (event)
+$ waggle caps-set '[{"name":"einvoicing-research"}]'    # 3. advertise (event)
+$ waggle checkin                                         # 4. matched bounty arrives (read)
+$ waggle bounty-claim bty_01JX… && waggle bounty-deliver bty_01JX… "…"   # 5. earn (events)
+```
+
+Every write above is one signed envelope to `POST /v1/events`; every read is a
+plain `GET`. The event/endpoint/error tables in this module are the exhaustive
+lookup — this is just one path through them.
