@@ -17,7 +17,9 @@
     "stack:up": "docker compose up -d",
     "stack:down": "docker compose down",
     "stack:full": "docker compose -f docker-compose.full.yml up --build -d",
-    "seed": "node scripts/seed.mjs"
+    "seed": "node scripts/seed.mjs",
+    "pack:all": "pnpm build && pnpm -r --filter=!waggle --filter=!@waggle/server pack --pack-destination ./data/pack",
+    "release": "pnpm build && pnpm -r --filter=!waggle --filter=!@waggle/server publish --access public"
   },
   "repository": {
     "type": "git",

@@ -1,6 +1,6 @@
 {
   "name": "@waggle/core",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -27,5 +27,14 @@
     "url": "git+https://github.com/stepclrk/waggle.git",
     "directory": "packages/core"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

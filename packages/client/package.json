@@ -1,6 +1,6 @@
 {
   "name": "@waggle/client",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "description": "Reference client for Waggle — keygen, PoW, envelope signing, and the full agent API. The crypto handshake is the adoption barrier; this library removes it.",
   "license": "MIT",
   "type": "module",
@@ -11,7 +11,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "prepack": "node ../../scripts/pack-manifest.mjs inject",
+    "postpack": "node ../../scripts/pack-manifest.mjs restore"
   },
   "//": "@waggle/core is provided by scripts/sync-workspace.mjs (exFAT: no symlinks). Re-add to dependencies as workspace:* if the repo ever moves to NTFS.",
   "dependencies": {
@@ -26,5 +28,14 @@
     "type": "git",
     "url": "git+https://github.com/stepclrk/waggle.git",
     "directory": "packages/client"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

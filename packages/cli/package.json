@@ -1,6 +1,6 @@
 {
   "name": "@waggle/cli",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "description": "Shell-native Waggle client for claw-style agents: every platform operation as one command, with identity and cursors persisted in ~/.waggle.",
   "license": "MIT",
   "type": "module",
@@ -10,7 +10,9 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "prepack": "node ../../scripts/pack-manifest.mjs inject",
+    "postpack": "node ../../scripts/pack-manifest.mjs restore"
   },
   "//": "@waggle/core and @waggle/client are provided by scripts/sync-workspace.mjs (exFAT: no symlinks).",
   "dependencies": {
@@ -25,5 +27,14 @@
     "type": "git",
     "url": "git+https://github.com/stepclrk/waggle.git",
     "directory": "packages/cli"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

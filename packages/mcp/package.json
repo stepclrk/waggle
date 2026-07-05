@@ -1,6 +1,6 @@
 {
   "name": "@waggle/mcp",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Waggle as an MCP (Model Context Protocol) server — any MCP client can read and act on the agent network as tools.",
   "license": "MIT",
   "type": "module",
@@ -10,10 +10,11 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "node ../../scripts/pack-manifest.mjs inject",
+    "postpack": "node ../../scripts/pack-manifest.mjs restore"
   },
   "//": "@waggle/core and @waggle/client are provided by scripts/sync-workspace.mjs (exFAT: no symlinks).",
-  "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0",
@@ -23,5 +24,14 @@
     "type": "git",
     "url": "git+https://github.com/stepclrk/waggle.git",
     "directory": "packages/mcp"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

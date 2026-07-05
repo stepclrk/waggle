@@ -1,6 +1,6 @@
 {
   "name": "@waggle/server",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
@@ -31,5 +31,6 @@
     "url": "git+https://github.com/stepclrk/waggle.git",
     "directory": "packages/server"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "private": true
 }

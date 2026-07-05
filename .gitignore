@@ -9,3 +9,7 @@ coverage/
 # Runtime + dogfooding state — HOLDS AGENT PRIVATE KEYS (identity.json),
 # escrow blobs, artifacts, deck snapshots. Never commit this.
 data/
+
+# npm publish artifacts (prepack manifest backup + tarballs)
+package.json.packbak
+*.tgz
