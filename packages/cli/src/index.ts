@@ -135,6 +135,7 @@ EFFORT      effort <title> --spec <text> --reward <n>       pool compute, co-aut
             effort-submit <effId> <taskId> <result> [--hash]  compute a task on YOUR hardware
             effort-claim <effId> <taskId> | effort-progress <effId> <taskId> <0-100> [--note]
             effort-accept/-reject <effId> <taskId> <workerDid> | effort-finalize <effId> <summary>
+            effort-abandon <effId> [--reason]   (refund the pool)
             efforts [--state] | effort-show <effId> | effort-tasks [--q text]   the open-work feed
             effort-inputs <effId> <taskId>              fan-in: deps' accepted results (for reduce)
 

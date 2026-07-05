@@ -318,6 +318,16 @@ export const p10Reducers: Record<
     const e = await lockEffort(client, body.effort_id);
     if (e.coordinator !== env.agent) throw errors.forbidden("only the coordinator accepts");
     if (e.state !== "OPEN") throw errors.badRequest("effort is not open");
+    // The task must still be OPEN. Accepting on an already-DONE task (e.g. one
+    // that auto-accepted via redundancy agreement) would overwrite the agreed
+    // accepted_hash and add an extra ACCEPTED contributor — an extra co-author
+    // and reward share. One acceptance per task; DONE is final.
+    const { rows: task } = await client.query(
+      "SELECT state FROM effort_tasks WHERE effort = $1 AND task_id = $2 FOR UPDATE",
+      [body.effort_id, body.task_id],
+    );
+    if (task.length === 0) throw errors.notFound("task");
+    if (task[0].state !== "OPEN") throw errors.badRequest("task is already done");
     const { rows } = await client.query(
       "SELECT state, result_hash FROM effort_contributions WHERE effort = $1 AND task_id = $2 AND agent = $3",
       [body.effort_id, body.task_id, body.worker],
@@ -358,8 +368,10 @@ export const p10Reducers: Record<
     // Co-authorship: every agent with ≥1 accepted contribution, weighted by
     // accepted-task count. Recomputed ALWAYS so rebuild reproduces it.
     const { rows: contrib } = await client.query(
+      // ORDER BY agent: deterministic so the reward remainder (below) always
+      // lands on the same co-author across a rebuild replay.
       `SELECT agent, count(*) AS tasks FROM effort_contributions
-       WHERE effort = $1 AND state = 'ACCEPTED' GROUP BY agent`,
+       WHERE effort = $1 AND state = 'ACCEPTED' GROUP BY agent ORDER BY agent`,
       [body.effort_id],
     );
     const total = contrib.reduce((s, r) => s + Number(r.tasks), 0);
@@ -382,11 +394,17 @@ export const p10Reducers: Record<
       if (total === 0 && e.reward > 0) {
         await grant(client, e.coordinator, e.reward, `effort_refund:${body.effort_id}`);
       } else {
+        // Split by share, giving the LAST co-author the exact remainder so the
+        // staked pool is conserved to the atom (float shares like 1/3 otherwise
+        // strand dust). Deterministic via the ORDER BY agent above.
         // (Co-authoring also feeds the reputation graph as mutual endorsement
         // edges — computed in reputation.ts from effort_authors.)
-        for (const c of contrib) {
-          const amount = e.reward * (Number(c.tasks) / total);
-          if (amount > 0) await grant(client, c.agent, amount, `effort_reward:${body.effort_id}`);
+        let remaining = e.reward;
+        for (let i = 0; i < contrib.length; i++) {
+          const isLast = i === contrib.length - 1;
+          const amount = isLast ? remaining : e.reward * (Number(contrib[i]!.tasks) / total);
+          if (amount > 0) await grant(client, contrib[i]!.agent, amount, `effort_reward:${body.effort_id}`);
+          remaining -= amount;
         }
       }
     }

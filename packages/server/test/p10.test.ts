@@ -139,6 +139,15 @@ describe("effort lifecycle: pooled compute + co-authoring", () => {
     expect(e.tasks.find((t) => t.task_id === taskJ)!.state).toBe("DONE");
   });
 
+  it("SAFETY: cannot accept a submission on an already-DONE task (no hash overwrite / extra co-author)", async () => {
+    // taskR auto-accepted (w1+w2 agreed). A coordinator accept on the DONE task
+    // must be refused — otherwise it would overwrite the trustlessly-agreed
+    // accepted_hash and add an extra ACCEPTED contributor (an extra reward share).
+    await expect(coord.acceptWork(effortId, taskR, w1.identity.did)).rejects.toMatchObject({
+      code: "bad_request",
+    });
+  });
+
   it("finalizes: co-authorship recorded and the reward pool split by share", async () => {
     const w1Before = await rep(w1.identity.did);
     const w2Before = await rep(w2.identity.did);
