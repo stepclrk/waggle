@@ -20,6 +20,7 @@ const { redis, redisSub } = await import("../src/redis.js");
 const { sweepTrades } = await import("../src/trade/sweeper.js");
 const { computeReputation } = await import("../src/reputation.js");
 const { rebuildViews } = await import("../src/rebuild.js");
+const { config } = await import("../src/config.js");
 
 let app: Awaited<ReturnType<typeof buildApp>>;
 let baseUrl: string;
@@ -27,6 +28,7 @@ let poster: WaggleClient;
 let worker: WaggleClient;
 let juror1: WaggleClient;
 let juror2: WaggleClient;
+let juror3: WaggleClient;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const rep = async (did: string) =>
@@ -54,14 +56,16 @@ beforeAll(async () => {
   worker = new WaggleClient(baseUrl, await WaggleIdentity.generate());
   juror1 = new WaggleClient(baseUrl, await WaggleIdentity.generate());
   juror2 = new WaggleClient(baseUrl, await WaggleIdentity.generate());
+  juror3 = new WaggleClient(baseUrl, await WaggleIdentity.generate());
   await poster.register("poster-p6");
   await worker.register("worker-p6");
   await juror1.register("juror-one");
   await juror2.register("juror-two");
+  await juror3.register("juror-three");
   // Anchor tier for the busy parties (generous rate limits for a burst-heavy
   // suite); jurors are established (the tier arbitration requires).
   await pool.query("UPDATE agents SET tier = 'anchor', reputation = 50 WHERE handle IN ('poster-p6','worker-p6')");
-  await pool.query("UPDATE agents SET tier = 'established', reputation = 60 WHERE handle IN ('juror-one','juror-two')");
+  await pool.query("UPDATE agents SET tier = 'established', reputation = 60 WHERE handle IN ('juror-one','juror-two','juror-three')");
 }, 240_000);
 
 afterAll(async () => {
@@ -141,6 +145,51 @@ describe("dispute + peer arbitration", () => {
     expect(await rep(poster.identity.did)).toBeCloseTo(posterBefore * 0.8, 5);
   }, 30_000);
 
+  it("split vote: majority jurors refunded, the dissenting minority forfeits its stake", async () => {
+    // Fresh parties so this worker-win (a PAID poster→worker transfer) doesn't
+    // drain the shared poster's stake budget or pollute the pair-transfer-cap
+    // accounting the anti-wash tests below rely on. The shared jurors are safe:
+    // majority stakes net out, and juror3 is used only here.
+    const sPoster = new WaggleClient(baseUrl, await WaggleIdentity.generate());
+    const sWorker = new WaggleClient(baseUrl, await WaggleIdentity.generate());
+    await sPoster.register("split-poster");
+    await sWorker.register("split-worker");
+    await pool.query(
+      "UPDATE agents SET tier = 'anchor', reputation = 50 WHERE handle IN ('split-poster','split-worker')",
+    );
+    const { bountyId } = await sPoster.postBounty({
+      title: "split-vote task",
+      spec: "produce the thing",
+      reward: 8,
+    });
+    await sWorker.claimBounty(bountyId);
+    await sWorker.deliverBounty(bountyId, "the delivered work product");
+    await sPoster.rejectBounty(bountyId, "not good enough (allegedly)");
+    await sWorker.disputeBounty(bountyId, "a split decision is coming");
+    // 2–1 for the worker. Each juror is charged the stake at vote time.
+    await juror1.arbitrateBounty(bountyId, "worker", "meets the spec");
+    await juror2.arbitrateBounty(bountyId, "worker");
+    await juror3.arbitrateBounty(bountyId, "poster", "I read it as junk");
+
+    // Captured after voting (stake already deducted), before settlement.
+    const j1 = await rep(juror1.identity.did);
+    const j2 = await rep(juror2.identity.did);
+    const j3 = await rep(juror3.identity.did);
+
+    await sleep(1_300);
+    await sweepTrades();
+
+    const b = (await sPoster.getBounty(bountyId)) as { state: string; resolution: string };
+    expect(b.state).toBe("PAID");
+    expect(b.resolution).toBe("worker");
+
+    // Majority (juror1, juror2) get their stake back; the minority (juror3)
+    // forfeits it — a bad-faith or lazy verdict now costs the juror.
+    expect(await rep(juror1.identity.did)).toBeCloseTo(j1 + 2, 5);
+    expect(await rep(juror2.identity.did)).toBeCloseTo(j2 + 2, 5);
+    expect(await rep(juror3.identity.did)).toBeCloseTo(j3, 5);
+  }, 30_000);
+
   it("poster wins: refund + mild frivolous-dispute penalty on the worker", async () => {
     const bountyId = await runBountyToRejected(6);
     await worker.disputeBounty(bountyId, "I disagree");
@@ -201,14 +250,17 @@ describe("anti-wash-trading", () => {
 
   it("per-pair diminishing returns: diverse endorsement beats repeat endorsement", async () => {
     // Two fresh targets with equal TOTAL incoming rating edges; one concentrated
-    // from a single rater, one diversified across three raters.
+    // from a single rater, one diversified across three raters. The raters are
+    // anchors (seeds): under always-seeded PageRank only seed-rooted endorsers
+    // carry trust mass, so a diverse set of seed endorsers must beat one seed's
+    // pair-diminished repeat edges.
     await pool.query(`
       INSERT INTO agents (did, handle, pubkey, status, tier, reputation) VALUES
       ('did:key:zWashTarget1111111111111111111111111111111', 'concentrated', '\\x00', 'active', 'standard', 0),
       ('did:key:zWashTarget2222222222222222222222222222222', 'diversified', '\\x00', 'active', 'standard', 0),
-      ('did:key:zWashRaterA111111111111111111111111111111', 'rater-a', '\\x00', 'active', 'standard', 10),
-      ('did:key:zWashRaterB111111111111111111111111111111', 'rater-b', '\\x00', 'active', 'standard', 10),
-      ('did:key:zWashRaterC111111111111111111111111111111', 'rater-c', '\\x00', 'active', 'standard', 10)
+      ('did:key:zWashRaterA111111111111111111111111111111', 'rater-a', '\\x00', 'active', 'anchor', 10),
+      ('did:key:zWashRaterB111111111111111111111111111111', 'rater-b', '\\x00', 'active', 'anchor', 10),
+      ('did:key:zWashRaterC111111111111111111111111111111', 'rater-c', '\\x00', 'active', 'anchor', 10)
       ON CONFLICT (did) DO NOTHING`);
     // concentrated: 3 five-star ratings all from rater-a
     // diversified: 3 five-star ratings from a, b, c
@@ -227,6 +279,13 @@ describe("anti-wash-trading", () => {
     const diversified = await rep("did:key:zWashTarget2222222222222222222222222222222");
     // Same edge count, same weights — diversity must strictly win.
     expect(diversified).toBeGreaterThan(concentrated);
+
+    // These agents/ratings were injected via raw SQL (not the event log), so a
+    // rebuild would drop them. Clean up so the later rebuild-equivalence test
+    // sees a fully log-derived graph (global PageRank makes stray non-log nodes
+    // shift everyone's normalised score).
+    await pool.query("DELETE FROM ratings WHERE rater LIKE 'did:key:zWash%'");
+    await pool.query("DELETE FROM agents WHERE did LIKE 'did:key:zWash%'");
   });
 
   it("admin anomaly surface lists concentrated pairs", async () => {
@@ -324,6 +383,15 @@ describe("rebuild equivalence with arbitration (spec §7)", () => {
     // to compare. The ledger and graph are rebuilt identically, so the batch
     // yields identical scores; bounty/arbitration state rebuilds from the log
     // directly.
+    // Root the reputation pass at a GENESIS anchor so the seed set is fixed
+    // across both passes. A tier='anchor' seed is not enough here: the poster
+    // carries bounty penalties that drop its ADJUSTED score below the anchor
+    // threshold, so computeReputation would demote it and flip pass #2 into the
+    // unrooted bootstrap mode (a different seed → every score shifts). Genesis
+    // membership is config-based and score-independent — the production
+    // cold-start root — so the poster stays a seed regardless of its own score.
+    (config.reputation.genesisAnchors as string[]).length = 0;
+    (config.reputation.genesisAnchors as string[]).push(poster.identity.did);
     await computeReputation();
     const before = await snapshot();
     const { skipped } = await rebuildViews();

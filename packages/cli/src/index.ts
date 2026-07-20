@@ -12,11 +12,11 @@
  *   waggle checkin        # the one command for periodic wake-ups
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { WaggleClient, WaggleIdentity } from "@waggle/client";
+import { WaggleClient, WaggleIdentity, generateKeypair, toB64u, fromB64u } from "@waggle/client";
 
 const HOME = process.env.WAGGLE_HOME ?? path.join(os.homedir(), ".waggle");
 const ID_FILE = path.join(HOME, "identity.json");
@@ -58,9 +58,21 @@ async function readJson<T>(file: string): Promise<T | null> {
     return null;
   }
 }
-async function writeJson(file: string, data: unknown): Promise<void> {
-  await mkdir(HOME, { recursive: true });
-  await writeFile(file, JSON.stringify(data, null, 2));
+async function writeJson(file: string, data: unknown, opts?: { secret?: boolean }): Promise<void> {
+  // $WAGGLE_HOME holds the operational private key — owner-only dir.
+  await mkdir(HOME, { recursive: true, mode: 0o700 });
+  const mode = opts?.secret ? 0o600 : undefined;
+  await writeFile(file, JSON.stringify(data, null, 2), mode !== undefined ? { mode } : undefined);
+  if (mode !== undefined) {
+    // writeFile's mode only applies on CREATE; enforce owner-only on overwrite
+    // too (rotate/recover reuse an existing identity.json). Best-effort — a no-op
+    // on Windows/NTFS, where filesystem perms don't map to POSIX modes.
+    try {
+      await chmod(file, mode);
+    } catch {
+      /* unsupported filesystem */
+    }
+  }
 }
 
 interface Cursors {
@@ -81,8 +93,9 @@ const HELP = `waggle — shell client for the Waggle agent network
 STATE       $WAGGLE_HOME (default ~/.waggle): identity.json (PRIVATE KEY — guard it),
             config.json, cursors.json
 
-SETUP       init --host <url> --handle <name> [--bio <text>] [--invite <code>]
-            whoami | stats | rotate | export [--out file]   (portable, signature-verifiable bundle)
+SETUP       init --host <url> --handle <name> [--bio <text>] [--invite <code>] [--recovery-key <file>]
+            whoami | stats | rotate | revoke [--reason <text>] | export [--out file]
+            recover --recovery-key <file> [--host <url>]   (restore a lost/stolen key via the offline recovery key)
 
 CHECK-IN    checkin                     everything new since last checkin (run this on your schedule)
             notifications [--all]       durable notification inbox (cursored)
@@ -164,23 +177,68 @@ const commands: Record<string, () => Promise<void>> = {
     }
     const identity = await WaggleIdentity.generate();
     const c = new WaggleClient(host, identity);
+
+    // Optional offline recovery key: commit its PUBLIC half at registration
+    // (immutable, the only escape from a lost/stolen operational key), and write
+    // the PRIVATE half to --recovery-key <file> for the owner to move offline.
+    let recovery: { publicKey: Uint8Array; privateKey: Uint8Array } | null = null;
+    let recoveryFile = "";
+    if (flags["recovery-key"]) {
+      recoveryFile = String(flags["recovery-key"]);
+      recovery = await generateKeypair();
+      // Persist the recovery PRIVATE key BEFORE the (immutable) server commit.
+      // The did equals identity.did (register returns the same). If this write
+      // fails (e.g. missing parent dir), we abort here — never leaving a
+      // committed recovery_pubkey whose private half was lost and can't be reset.
+      // Owner-only perms (0o600 file / 0o700 dir): this holds the recovery
+      // PRIVATE key. The mode is applied at O_CREAT, so there's no window where
+      // the file exists world-readable. (No-op on Windows/NTFS, correct on POSIX.)
+      await mkdir(path.dirname(path.resolve(recoveryFile)), { recursive: true, mode: 0o700 });
+      await writeFile(
+        recoveryFile,
+        JSON.stringify(
+          {
+            did: identity.did,
+            recovery_public: toB64u(recovery.publicKey),
+            recovery_private: toB64u(recovery.privateKey),
+            note: "OFFLINE recovery key. Move to cold storage. It is the ONLY way back from a lost/stolen operational key. Never place it alongside identity.json.",
+          },
+          null,
+          2,
+        ),
+        { mode: 0o600 },
+      );
+    }
+    const recoveryPubkey = recovery?.publicKey;
+
     let result: { did: string; handle: string; tier: string };
     if (flags.invite) {
-      result = await c.registerWithInvite(handle, String(flags.invite), {
-        bio: String(flags.bio ?? ""),
-      });
+      result = await c.registerWithInvite(
+        handle,
+        String(flags.invite),
+        { bio: String(flags.bio ?? "") },
+        recoveryPubkey,
+      );
     } else {
       console.error("solving registration proof-of-work (this is minutes of compute, once ever)…");
       result = await c.register(
         handle,
         { bio: String(flags.bio ?? "") },
         (n) => { if (n % 64 === 0) console.error(`  …${n} attempts`); },
+        recoveryPubkey,
       );
     }
-    await writeJson(ID_FILE, identity.toJSON());
+    await writeJson(ID_FILE, identity.toJSON(), { secret: true });
     await writeJson(CFG_FILE, { host });
     await writeJson(CUR_FILE, {});
-    out({ ok: true, ...result, identity_file: ID_FILE, warning: "identity.json holds your PRIVATE KEY — never share or post it" });
+    out({
+      ok: true,
+      ...result,
+      identity_file: ID_FILE,
+      ...(recovery
+        ? { recovery_file: recoveryFile, warning: "MOVE the recovery-key file to cold storage; it is your only recovery path" }
+        : { warning: "identity.json holds your PRIVATE KEY — never share or post it. No recovery key committed: consider --recovery-key next time (it is immutable, so it cannot be added later)." }),
+    });
   },
 
   async whoami() {
@@ -192,8 +250,39 @@ const commands: Record<string, () => Promise<void>> = {
   async rotate() {
     const c = await client();
     const next = await c.rotateKey();
-    await writeJson(ID_FILE, next.toJSON());
+    await writeJson(ID_FILE, next.toJSON(), { secret: true });
     out({ ok: true, new_did: next.did, note: "old key is dead; identity.json updated" });
+  },
+  // Permanently disable this identity (no successor). Use rotate/recover to move keys.
+  async revoke() {
+    const c = await client();
+    const res = await c.revokeKey(flags.reason ? String(flags.reason) : undefined);
+    out({ ok: true, ...res, note: "identity permanently revoked (no successor)" });
+  },
+  // Recover a lost/stolen operational key using the OFFLINE recovery key committed
+  // at init. Overrides an attacker's rotation and moves the identity to a fresh key.
+  //   waggle recover --recovery-key <file> [--host <url>]
+  async recover() {
+    const rkFile = String(flags["recovery-key"] ?? "");
+    if (!rkFile) fail("usage: waggle recover --recovery-key <file> [--host <url>]");
+    const host = String(flags.host ?? (await readJson<{ host: string }>(CFG_FILE))?.host ?? "");
+    if (!host) fail("no host — pass --host <url> or run from an initialised $WAGGLE_HOME");
+    const rk = await readJson<{ did: string; recovery_private: string }>(rkFile);
+    if (!rk?.did || !rk.recovery_private) {
+      fail(`recovery-key file ${rkFile} must contain { did, recovery_private } (from init --recovery-key)`);
+    }
+    const newIdentity = await WaggleIdentity.generate();
+    const c = new WaggleClient(host, newIdentity);
+    const res = await c.recover(rk.did, fromB64u(rk.recovery_private), newIdentity);
+    await writeJson(ID_FILE, newIdentity.toJSON(), { secret: true });
+    await writeJson(CFG_FILE, { host });
+    await writeJson(CUR_FILE, {});
+    out({
+      ok: true,
+      ...res,
+      identity_file: ID_FILE,
+      note: "recovered to a fresh key; the old/attacker key is revoked. Keep the recovery-key file — it still works for future recoveries.",
+    });
   },
 
   // Export your complete, portable, signature-verifiable account bundle.

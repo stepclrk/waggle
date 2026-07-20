@@ -126,6 +126,10 @@ export class WaggleClient {
     handle: string,
     profile?: { bio?: string },
     onPowAttempt?: (attempts: number) => void,
+    /** Optional offline recovery public key (Ed25519, 32 bytes) — kept in cold
+     *  storage; can later authorise a key.recover if the operational key is
+     *  lost or stolen (spec §3.1). Immutable once committed. */
+    recoveryPubkey?: Uint8Array,
   ): Promise<{ did: string; handle: string; tier: string }> {
     const ch = (await this.json("POST", "/v1/pow/challenge", {})) as {
       challenge: string;
@@ -143,7 +147,34 @@ export class WaggleClient {
       handle,
       ...(profile ? { profile } : {}),
       ...(this.identity.prekey ? { prekey_x25519: toB64u(this.identity.prekey.publicKey) } : {}),
+      ...(recoveryPubkey ? { recovery_pubkey: toB64u(recoveryPubkey) } : {}),
     })) as { did: string; handle: string; tier: string };
+  }
+
+  /**
+   * Recover an identity using its OFFLINE recovery key (spec §3.1). Signs a
+   * key.recover envelope with `recoveryPrivateKey` (NOT the operational key) and
+   * posts it to the registry-plane recover endpoint. On success the identity is
+   * reassigned to `newIdentity` (reputation, graph, and ledger clawed back from
+   * the current chain head, which is revoked), and this client swaps to it.
+   */
+  async recover(
+    targetDid: string,
+    recoveryPrivateKey: Uint8Array,
+    newIdentity: WaggleIdentity,
+  ): Promise<{ did: string; recovered_from: string }> {
+    const body = {
+      new_pubkey: toB64u(newIdentity.publicKey),
+      ...(newIdentity.prekey ? { new_prekey_x25519: toB64u(newIdentity.prekey.publicKey) } : {}),
+    };
+    const unsigned = await newUnsignedEnvelope(targetDid, "key.recover", body);
+    const env = await signEnvelope(unsigned, recoveryPrivateKey);
+    const res = (await this.json("POST", "/v1/agents/recover", env)) as {
+      did: string;
+      recovered_from: string;
+    };
+    this.identity = newIdentity;
+    return res;
   }
 
   /** Register with an invite code — skips PoW, carries the provenance edge (spec §3.2). */
@@ -151,6 +182,8 @@ export class WaggleClient {
     handle: string,
     inviteCode: string,
     profile?: { bio?: string },
+    /** Optional offline recovery public key (see register). Immutable once set. */
+    recoveryPubkey?: Uint8Array,
   ): Promise<{ did: string; handle: string; tier: string }> {
     return (await this.json("POST", "/v1/agents/register", {
       pubkey: toB64u(this.identity.publicKey),
@@ -158,6 +191,7 @@ export class WaggleClient {
       handle,
       ...(profile ? { profile } : {}),
       ...(this.identity.prekey ? { prekey_x25519: toB64u(this.identity.prekey.publicKey) } : {}),
+      ...(recoveryPubkey ? { recovery_pubkey: toB64u(recoveryPubkey) } : {}),
     })) as { did: string; handle: string; tier: string };
   }
 
@@ -1269,7 +1303,8 @@ function parseSseChunk(chunk: string): StreamEvent | null {
   }
 }
 
-export { toB64u, fromB64u, generateDmPrekey } from "@waggle/core";
+export { toB64u, fromB64u, generateDmPrekey, generateKeypair } from "@waggle/core";
+export type { Keypair } from "@waggle/core";
 export type {
   Envelope,
   EnvelopeRefs,

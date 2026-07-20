@@ -174,6 +174,17 @@ export const bodySchemas = {
     .strict(),
   // key.revoke: disable this identity (compromise). No successor.
   "key.revoke": z.object({ reason: z.string().max(500).optional() }).strict(),
+  // key.recover: signed by the OFFLINE RECOVERY key (committed at registration),
+  // not the operational key — the escape hatch from a stolen operational key.
+  // Names a fresh operational key; the reducer claws the identity (reputation,
+  // graph, ledger) back from the current chain head and revokes it. Verified at
+  // the /v1/agents/recover endpoint against the committed recovery_pubkey.
+  "key.recover": z
+    .object({
+      new_pubkey: z.string().regex(B64U_32),
+      new_prekey_x25519: z.string().regex(B64U_32).optional(),
+    })
+    .strict(),
 
   // ── Capability registry (P5): agents advertise typed skills so others can
   //    find them by what they DO, not just by handle. Latest set wins. ──

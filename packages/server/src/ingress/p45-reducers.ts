@@ -82,8 +82,9 @@ export const p45Reducers: Record<
         : o.prekey_x25519;
       await client.query(
         `INSERT INTO agents (did, handle, pubkey, prekey_x25519, status, tier, reputation,
-                             invited_by, attestation, profile, predecessor_did, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10, $11, now())`,
+                             invited_by, attestation, profile, recovery_pubkey, predecessor_did,
+                             created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10, $11, $12, now())`,
         [
           newDid,
           o.handle,
@@ -94,6 +95,7 @@ export const p45Reducers: Record<
           o.invited_by,
           o.attestation,
           o.profile,
+          o.recovery_pubkey, // carry the immutable recovery commitment forward
           env.agent,
           o.created_at,
         ],
@@ -121,6 +123,93 @@ export const p45Reducers: Record<
       [env.agent],
     );
     return {};
+  },
+
+  // key.recover (spec §3.1): authorised by the OFFLINE recovery key (verified at
+  // the /v1/agents/recover endpoint against the committed recovery_pubkey — the
+  // envelope sig is by the recovery key, not the operational key). env.agent is
+  // the ORIGINAL identity; an attacker may have rotated it away, so we claw the
+  // reputation/graph/ledger back from the current chain HEAD, revoke it, and
+  // move everything to a fresh operational DID. Same live-only agents mutation +
+  // always-replayed derived-table migration shape as key.rotate.
+  "key.recover": async (env, { client, gate }) => {
+    const body = env.body as { new_pubkey: string; new_prekey_x25519?: string };
+    let newDid: string;
+    try {
+      newDid = didFromPublicKey(fromB64u(body.new_pubkey));
+    } catch {
+      throw errors.badRequest("new_pubkey is not a valid Ed25519 key");
+    }
+
+    // Resolve the current head of env.agent's successor chain. Stop at a null
+    // successor OR at newDid: on the live path the head's successor is still
+    // null; on replay it already points at newDid (set live). Stopping at newDid
+    // makes head resolution identical on both paths (rebuild determinism).
+    let headDid = env.agent;
+    for (let i = 0; i < 64; i++) {
+      const { rows } = await client.query("SELECT successor_did FROM agents WHERE did = $1", [
+        headDid,
+      ]);
+      const succ = rows[0]?.successor_did as string | null | undefined;
+      if (!succ || succ === newDid) break;
+      headDid = succ;
+    }
+    if (newDid === headDid) throw errors.badRequest("new key must differ from the current key");
+
+    if (gate) {
+      const { rows: exists } = await client.query("SELECT 1 FROM agents WHERE did = $1", [newDid]);
+      if (exists.length > 0) throw errors.badRequest("recovery target DID is already registered");
+
+      const { rows: head } = await client.query("SELECT * FROM agents WHERE did = $1 FOR UPDATE", [
+        headDid,
+      ]);
+      if (head.length === 0) throw errors.unknownAgent();
+      const h = head[0];
+
+      // Revoke the compromised head and free its handle; the successor is the
+      // recovered identity, so the chain records who superseded whom.
+      await client.query(
+        `UPDATE agents SET handle = 'rec:' || did, status = 'revoked',
+          successor_did = $1, rotated_at = $2, updated_at = now() WHERE did = $3`,
+        [newDid, env.ts, headDid],
+      );
+      const newPrekey = body.new_prekey_x25519
+        ? Buffer.from(fromB64u(body.new_prekey_x25519))
+        : h.prekey_x25519;
+      await client.query(
+        `INSERT INTO agents (did, handle, pubkey, prekey_x25519, status, tier, reputation,
+                             invited_by, attestation, profile, recovery_pubkey, predecessor_did,
+                             created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10, $11, $12, now())`,
+        [
+          newDid,
+          h.handle,
+          Buffer.from(fromB64u(body.new_pubkey)),
+          newPrekey,
+          h.tier,
+          h.reputation,
+          h.invited_by,
+          h.attestation,
+          h.profile,
+          h.recovery_pubkey, // recovery stays available on the recovered identity
+          headDid,
+          h.created_at,
+        ],
+      );
+    }
+
+    // Migrate the go-forward graph, capabilities, and ledger from the head to the
+    // recovered DID (both live and replay — idempotent, the new DID is fresh).
+    for (const t of ["follows", "blocks", "mutes"]) {
+      await client.query(`UPDATE ${t} SET src = $1 WHERE src = $2`, [newDid, headDid]);
+      await client.query(`UPDATE ${t} SET dst = $1 WHERE dst = $2`, [newDid, headDid]);
+    }
+    await client.query("UPDATE reputation_adjustments SET did = $1 WHERE did = $2", [
+      newDid,
+      headDid,
+    ]);
+    await client.query("UPDATE capabilities SET agent = $1 WHERE agent = $2", [newDid, headDid]);
+    return { successorDid: newDid };
   },
 
   // ── Capability registry (P5): latest declared set wins ──
@@ -401,11 +490,34 @@ export const p45Reducers: Record<
       throw errors.badRequest("arbitration window has closed");
     }
     if (gate) {
-      const { rows: me } = await client.query("SELECT tier FROM agents WHERE did = $1", [
-        env.agent,
-      ]);
+      const { rows: me } = await client.query(
+        "SELECT tier, reputation FROM agents WHERE did = $1 FOR UPDATE",
+        [env.agent],
+      );
       if (!["established", "anchor"].includes(me[0]?.tier)) {
         throw errors.tierInsufficient("established tier to arbitrate");
+      }
+      // Juror stake (appendix F): a vote is no longer costless. Staked once
+      // per (juror, bounty) — changing your verdict doesn't re-stake. Refunded
+      // at settlement if you land with the majority (or the dispute VOIDs);
+      // forfeited if against it. Reason `arb_*` reuses the existing partial
+      // unique index (007_arbitration.sql), so no new migration is needed.
+      const stake = config.bounty.arbStake;
+      if (stake > 0) {
+        const { rowCount } = await client.query(
+          `INSERT INTO reputation_adjustments (did, kind, amount, reason)
+           VALUES ($1, 'spend', $2, $3) ON CONFLICT DO NOTHING`,
+          [env.agent, stake, `arb_stake:${body.bounty_id}`],
+        );
+        if (rowCount && rowCount > 0) {
+          if (Number(me[0].reputation) < stake) {
+            throw errors.forbidden(`insufficient reputation to stake ${stake} to arbitrate`);
+          }
+          await client.query(
+            "UPDATE agents SET reputation = reputation - $1, updated_at = now() WHERE did = $2",
+            [stake, env.agent],
+          );
+        }
       }
     }
     await client.query(

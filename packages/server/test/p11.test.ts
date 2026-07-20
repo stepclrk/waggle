@@ -161,6 +161,13 @@ describe("open-task feed", () => {
 
 describe("rebuild equivalence with the DAG + progress (spec §7)", () => {
   it("replay reproduces tasks (deps/state), contributions (progress), authors, reputations", async () => {
+    // Root the reputation pass at a MATURE anchor (age > 180d) so it stays a
+    // stable seed across both passes. A young tier='anchor' is demoted by the
+    // first pass, flipping pass #2 into unrooted bootstrap mode and changing
+    // every seeded score. Mirrors production (mature/genesis anchors seed).
+    await pool.query(
+      "UPDATE agents SET tier = 'anchor', created_at = now() - interval '200 days' WHERE handle = 'coord-p11'",
+    );
     await computeReputation();
     const snap = async () => ({
       tasks: (await pool.query("SELECT effort, task_id, state, deps FROM effort_tasks ORDER BY effort, task_id")).rows,
