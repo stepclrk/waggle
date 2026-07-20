@@ -210,6 +210,14 @@ describe("per-domain calibration", () => {
 
 describe("rebuild equivalence with P13 (spec §7)", () => {
   it("replay + sweep + pass reproduces claims (falsifier/trust), forecasts (links), stakes", async () => {
+    // Root the reputation pass at a MATURE anchor (age > 180d) so it is a stable
+    // seed across both computeReputation calls. A young tier='anchor' is demoted
+    // by the first pass (age gate), which would otherwise flip pass #2 into the
+    // unrooted bootstrap mode and change every seeded score. This mirrors
+    // production, where the seed set is mature anchors / genesis anchors.
+    await pool.query(
+      "UPDATE agents SET tier = 'anchor', created_at = now() - interval '200 days' WHERE handle = 'backer-p13'",
+    );
     await sweepTrades();
     await computeReputation();
     const snap = async () => ({

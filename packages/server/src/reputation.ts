@@ -1,17 +1,19 @@
 /**
  * Reputation graph (spec §6).
  *
- * Two modes, auto-selected by network size (spec §14 open decision 3):
- *  - provisional (< threshold agents): flat trust — decayed weighted counts,
- *    squashed to 0–100 via 100·(1−e^(−raw/K)). No propagation; small networks
- *    have no meaningful trust topology yet.
- *  - propagation (≥ threshold): personalised-PageRank over the endorsement
- *    graph (votes, follows as weighted edges), seeded from anchor-tier nodes
- *    (falling back to the top decile by provisional score while the first
- *    anchors mature). A thousand fake agents upvoting each other form a
- *    low-trust island because no trusted node endorses the cluster.
+ * Trust is ALWAYS personalised-PageRank over the endorsement graph (votes,
+ * follows, ratings, claim endorsements, co-authorship as weighted edges),
+ * seeded from a rooted trust set = mature anchor-tier nodes ∪ operator-
+ * designated genesis anchors (GENESIS_ANCHORS). A thousand fake agents
+ * upvoting each other form a low-trust island because no seed endorses the
+ * cluster — the anti-Sybil property holds at every network size, not just
+ * above some threshold. If (and only if) no rooted seed exists, the pass runs
+ * in a "bootstrap" mode seeded from the top decile by provisional score and
+ * logs a loud UNROOTED warning — that fallback is Sybil-gameable, so a real
+ * deployment must set genesis anchors. (Provisional scoring survives only as
+ * the bootstrap seed-SELECTOR; it is no longer a scoring mode of its own.)
  *
- * Shared by both modes:
+ * Shared machinery:
  *  - time decay, half-life ~90 days: weight ×= 0.5^(age_days/90)
  *  - negative adjustments applied outside the graph pass: blocks/mutes
  *    received (mild), upheld reports (severe, multiplicative — applied
@@ -23,7 +25,7 @@
 
 import { pool, withTx } from "./db.js";
 import { config, tierForScore } from "./config.js";
-import { reputationRuns } from "./lib/metrics.js";
+import { reputationRuns, reputationGini, tierTransitions } from "./lib/metrics.js";
 
 interface Edge {
   src: string;
@@ -333,8 +335,24 @@ function pprScores(
   return scores;
 }
 
+/** Gini coefficient of a non-negative distribution: 0 = perfectly equal,
+ *  →1 = one holder has everything. Used to watch reputation concentration. */
+function giniCoefficient(values: number[]): number {
+  const n = values.length;
+  if (n === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const sum = sorted.reduce((a, b) => a + b, 0);
+  if (sum === 0) return 0;
+  let cum = 0;
+  for (let i = 0; i < n; i++) cum += (i + 1) * sorted[i]!;
+  return (2 * cum) / (n * sum) - (n + 1) / n;
+}
+
 export interface ReputationResult {
-  mode: "provisional" | "propagation";
+  /** "propagation" = seeded from a rooted set (mature anchors and/or genesis
+   *  anchors). "bootstrap" = no rooted seed set existed, so the run fell back
+   *  to a Sybil-gameable top-decile-provisional seed set (see computeReputation). */
+  mode: "propagation" | "bootstrap";
   agents: number;
   edges: number;
   durationMs: number;
@@ -344,32 +362,52 @@ export async function computeReputation(): Promise<ReputationResult> {
   const started = Date.now();
   const now = started;
 
+  // ORDER BY did so node indexing (and thus PageRank accumulation order and the
+  // bootstrap seed set) is a pure function of the log-derived graph — identical
+  // on the live path and after a full rebuild, regardless of physical row order.
   const { rows: agentRows } = await pool.query(
-    "SELECT did, tier, created_at, status FROM agents",
+    "SELECT did, tier, created_at, status FROM agents ORDER BY did",
   );
   const agents = agentRows.map((r) => r.did as string);
   const edges = await loadPositiveEdges(now);
   const negatives = await loadNegatives(now);
 
-  const mode: ReputationResult["mode"] =
-    agents.length >= config.reputation.propagationThreshold ? "propagation" : "provisional";
-
-  let scores: Map<string, number>;
-  if (mode === "provisional") {
-    scores = provisionalScores(agents, edges, negatives);
-  } else {
-    let seeds = agentRows.filter((r) => r.tier === "anchor").map((r) => r.did as string);
-    if (seeds.length === 0) {
-      // Bootstrap: top decile by provisional score stands in for the seed set
-      // until real anchors mature (spec §14 open decision 3).
-      const provisional = provisionalScores(agents, edges, negatives);
-      seeds = [...provisional.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, Math.max(1, Math.floor(agents.length / 10)))
-        .map(([did]) => did);
-    }
-    scores = pprScores(agents, edges, seeds, negatives);
+  // Trust is ALWAYS seeded personalized PageRank so a zero-reputation node's
+  // endorsements carry ~no weight at every network size. (The old sub-threshold
+  // "provisional" path summed edge weights independent of the endorser's
+  // standing, letting fresh Sybils confer full trust exactly when the graph was
+  // smallest and least defended — spec §14 open decision 3.) Seeds are the
+  // rooted trust set: mature anchors ∪ operator-designated genesis anchors.
+  const agentSet = new Set(agents);
+  const seedSet = new Set<string>(
+    agentRows.filter((r) => r.tier === "anchor").map((r) => r.did as string),
+  );
+  for (const did of config.reputation.genesisAnchors) {
+    if (agentSet.has(did)) seedSet.add(did);
   }
+  let mode: ReputationResult["mode"] = "propagation";
+  let seeds = [...seedSet];
+  if (seeds.length === 0) {
+    // No mature anchors AND no genesis root configured. Fall back to a
+    // top-decile-provisional seed set so a fresh deployment still ranks — but
+    // that set is derived from the same reputation-blind sum, so it is
+    // Sybil-gameable. Warn loudly and mark the run 'bootstrap' so an unrooted
+    // deployment is visibly untrusted rather than silently so.
+    mode = "bootstrap";
+    console.warn(
+      "[reputation] UNROOTED: no mature anchors and GENESIS_ANCHORS unset — " +
+        "seeding from top-decile provisional scores. Trust is Sybil-gameable " +
+        "until genesis anchors are configured or real anchors mature.",
+    );
+    const provisional = provisionalScores(agents, edges, negatives);
+    seeds = [...provisional.entries()]
+      // Deterministic tiebreak by did so equal-scored agents select the same
+      // seed set every run (rebuild equivalence, spec §7).
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .slice(0, Math.max(1, Math.floor(agents.length / 10)))
+      .map(([did]) => did);
+  }
+  const scores = pprScores(agents, edges, seeds, negatives);
 
   // Re-apply the persistent adjustment ledger (penalties, spends) so
   // moderation hits and reputation spends survive recomputes. Both fade with
@@ -396,18 +434,31 @@ export async function computeReputation(): Promise<ReputationResult> {
     return score;
   };
 
+  const TIER_RANK: Record<string, number> = { probation: 0, standard: 1, established: 2, anchor: 3 };
+  const finalScores: number[] = [];
   await withTx(async (client) => {
     for (const row of agentRows) {
       const did = row.did as string;
       const score = Math.max(0, Math.min(100, adjust(did, scores.get(did) ?? 0)));
+      finalScores.push(score);
       const ageDays = (now - new Date(row.created_at).getTime()) / 86_400_000;
       const tier = tierForScore(score, ageDays);
+      // Observability (spec §12): tier churn — sustained demotions flag that the
+      // decay half-life is bleeding quiet-but-useful agents.
+      if (tier !== row.tier) {
+        const dir = (TIER_RANK[tier] ?? 0) > (TIER_RANK[row.tier as string] ?? 0) ? "promote" : "demote";
+        tierTransitions.inc({ direction: dir });
+      }
       await client.query(
         "UPDATE agents SET reputation = $1, tier = $2, updated_at = now() WHERE did = $3",
         [score.toFixed(4), tier, did],
       );
     }
   });
+
+  // Reputation concentration (Gini, 0=equal … 1=concentrated). A rising trend
+  // means decay tuning is entrenching incumbents; exposed at /metrics for review.
+  reputationGini.set(giniCoefficient(finalScores));
 
   // ── Canonical claim-trust refresh (appendix N) ──
   // Endorser reputations just moved, so ALL claim trust is re-derived here

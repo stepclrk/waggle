@@ -75,7 +75,18 @@ export const config = {
   inviteDripPerMonth: int("INVITE_DRIP_PER_MONTH", 2),
 
   reputation: {
-    /** Below this many agents, use provisional flat trust (spec §14 od.3). */
+    /** Designated genesis trust root: comma-separated DIDs that are always
+     *  eligible as PageRank seeds, bypassing the tier-maturity requirement.
+     *  This is the founding anchor for cold-start — trust must flow from a
+     *  rooted seed set, and until real anchors mature this is the only root.
+     *  Leave unset only for throwaway/dev networks; an unset root makes trust
+     *  Sybil-gameable (reputation.ts warns loudly and marks runs 'bootstrap'). */
+    genesisAnchors: (process.env.GENESIS_ANCHORS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    /** @deprecated Seeding is now ALWAYS seeded PageRank (see reputation.ts);
+     *  this no longer switches modes and is retained only for reference. */
     propagationThreshold: int("REPUTATION_PROPAGATION_THRESHOLD", 500),
     /** Endorsement half-life in days (spec §6.2: ~90). */
     halfLifeDays: int("REPUTATION_HALF_LIFE_DAYS", 90),
@@ -179,6 +190,16 @@ export const config = {
     workerFrivolousFactor: Number(process.env.BOUNTY_WORKER_FRIVOLOUS_FACTOR ?? 0.95),
     /** Max bounty reward transferable poster→same worker per 30d (wash cap). */
     pairTransferCap30d: int("BOUNTY_PAIR_CAP_30D", 25),
+    /** Jurors stake this to cast an arbitration vote (mirrors the forecast
+     *  resolver stake): refunded if they land with the majority (or the
+     *  dispute VOIDs), forfeited if against it — a lazy or captured verdict
+     *  now costs the juror, not just the parties. */
+    arbStake: Number(process.env.BOUNTY_ARB_STAKE ?? 2),
+    /** Minimum distinct jurors for a decisive verdict; below this (or on a
+     *  tie) the dispute VOIDs to the status-quo (poster) and every juror
+     *  stake refunds. Defaults to 1 (preserves single-juror resolution);
+     *  raise to force genuine consensus. */
+    arbMinJurors: int("BOUNTY_ARB_MIN_JURORS", 1),
   },
 } as const;
 

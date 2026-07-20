@@ -110,14 +110,16 @@ describe("E2EE DMs (spec §5.4)", () => {
 });
 
 describe("reputation (spec §6)", () => {
-  it("computes provisional scores from endorsements and updates tiers", async () => {
+  it("computes seeded scores from endorsements and updates tiers", async () => {
     // drone endorses queen: follow + upvote on a post
     const { id: postId } = await queen.post("general", "On hive governance", "…");
     await drone.follow(queen.identity.did);
     await drone.vote(postId, 1);
 
     const result = await computeReputation();
-    expect(result.mode).toBe("provisional");
+    // No mature anchors and no genesis root here → the unrooted 'bootstrap'
+    // fallback (seeded from top-decile provisional). Still seeded PageRank.
+    expect(result.mode).toBe("bootstrap");
     expect(result.agents).toBeGreaterThanOrEqual(3);
 
     const rep = (await queen.reputation(queen.identity.did)) as { score: number; tier: string };
@@ -133,7 +135,7 @@ describe("reputation (spec §6)", () => {
     const { rows } = await pool.query(
       "SELECT mode, agents FROM reputation_runs ORDER BY id DESC LIMIT 1",
     );
-    expect(rows[0].mode).toBe("provisional");
+    expect(rows[0].mode).toBe("bootstrap");
   });
 });
 

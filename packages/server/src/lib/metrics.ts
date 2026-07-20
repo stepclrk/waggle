@@ -142,6 +142,14 @@ export const reputationRuns = counter(
   "waggle_reputation_runs_total",
   "Reputation batch passes by mode",
 );
+export const reputationGini = gauge(
+  "waggle_reputation_gini",
+  "Gini coefficient of the reputation distribution (0=equal, 1=fully concentrated). Rising over time signals decay/half-life mis-tuning entrenching incumbents.",
+);
+export const tierTransitions = counter(
+  "waggle_tier_transitions_total",
+  "Agent tier changes applied per reputation pass, by direction (promote/demote). Sustained demotions signal quiet-agent churn.",
+);
 export const pgPoolTotal = gauge("waggle_pg_pool_total", "Postgres pool: total clients");
 export const pgPoolIdle = gauge("waggle_pg_pool_idle", "Postgres pool: idle clients");
 export const pgPoolWaiting = gauge("waggle_pg_pool_waiting", "Postgres pool: queued requests");

@@ -157,9 +157,10 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
       const positive = ["follow", "upvote", "good_rating", "claim_endorsement"];
       explain = {
         note:
-          "Score = personalised-PageRank/provisional trust over the edges below, minus negatives, " +
+          "Score = seeded personalised-PageRank over the edges below, minus negatives, " +
           "with per-pair diminishing returns, then the adjustment ledger re-applied. Endorsements " +
-          "from high-reputation agents count far more than the raw counts here.",
+          "from seed-reachable (trusted) agents count far more than the raw counts here; a " +
+          "zero-reputation endorser confers almost nothing.",
         graph_edges: Object.fromEntries(
           edges.rows.map((e) => [
             e.kind,
@@ -172,8 +173,8 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
 
     return {
       did: r.did,
-      // Composite 0-100 (spec §6.3): provisional flat trust below the
-      // propagation threshold, personalised PageRank above it.
+      // Composite 0-100 (spec §6.3): always seeded personalised-PageRank over
+      // the endorsement graph, rooted at anchor + genesis seeds.
       score: Number(r.reputation),
       tier: r.tier,
       counts: {

@@ -210,7 +210,41 @@ export async function sweepTrades(): Promise<SweepResult> {
       const posterVotes = Number(tally[0].poster_votes);
       const reward = Number(b.reward);
 
-      if (workerVotes > posterVotes && b.worker) {
+      // Juror stake settlement (appendix F): jurors staked at vote time
+      // (p45-reducers `arb_stake:`). Majority-side jurors are refunded; the
+      // minority forfeits. On VOID (tie or below quorum) everyone is refunded —
+      // there was no decisive side to be wrong about. Ledger-guarded per
+      // (juror, bounty) so a re-run sweep never double-refunds.
+      const settleJurors = async (winningVerdict: 1 | -1 | null) => {
+        const stake = config.bounty.arbStake;
+        if (stake <= 0) return;
+        const { rows: jurors } = await client.query(
+          winningVerdict === null
+            ? "SELECT juror FROM bounty_arbitrations WHERE bounty = $1"
+            : "SELECT juror FROM bounty_arbitrations WHERE bounty = $1 AND verdict = $2",
+          winningVerdict === null ? [b.id] : [b.id, winningVerdict],
+        );
+        for (const j of jurors) {
+          const { rowCount } = await client.query(
+            `INSERT INTO reputation_adjustments (did, kind, amount, reason)
+             VALUES ($1, 'grant', $2, $3) ON CONFLICT DO NOTHING`,
+            [j.juror, stake, `arb_refund:${b.id}`],
+          );
+          if (rowCount && rowCount > 0) {
+            await client.query(
+              "UPDATE agents SET reputation = reputation + $1, updated_at = now() WHERE did = $2",
+              [stake, j.juror],
+            );
+          }
+        }
+      };
+
+      // Decisive only with a strict majority and a real quorum; otherwise the
+      // dispute VOIDs to the status-quo (poster keeps the work unpaid).
+      const decisive =
+        workerVotes !== posterVotes && workerVotes + posterVotes >= config.bounty.arbMinJurors;
+
+      if (decisive && workerVotes > posterVotes && b.worker) {
         // Jury sided with the worker: pay them; penalise the poster for
         // trying to keep work unpaid.
         await client.query(
@@ -239,15 +273,16 @@ export async function sweepTrades(): Promise<SweepResult> {
             [config.bounty.posterArbLossFactor, b.poster],
           );
         }
-      } else {
-        // Poster prevails: refund the stake. Mild frivolous-dispute penalty
-        // only when jurors actually voted against the worker.
+        await settleJurors(1);
+      } else if (decisive && posterVotes > workerVotes) {
+        // Poster prevails on a decisive vote: refund the stake, mild
+        // frivolous-dispute penalty on the worker who forced a losing dispute.
         await client.query(
           "UPDATE bounties SET state = 'REJECTED', resolution = 'poster', updated_at = now() WHERE id = $1",
           [b.id],
         );
         await refund(b.poster, reward, b.id);
-        if (posterVotes > 0 && b.worker) {
+        if (b.worker) {
           const { rowCount } = await client.query(
             `INSERT INTO reputation_adjustments (did, kind, factor, reason)
              VALUES ($1, 'penalty_mult', $2, $3) ON CONFLICT DO NOTHING`,
@@ -260,6 +295,16 @@ export async function sweepTrades(): Promise<SweepResult> {
             );
           }
         }
+        await settleJurors(-1);
+      } else {
+        // VOID (tie or below quorum): status-quo poster win, no party penalty,
+        // and every juror stake refunded.
+        await client.query(
+          "UPDATE bounties SET state = 'REJECTED', resolution = 'poster', updated_at = now() WHERE id = $1",
+          [b.id],
+        );
+        await refund(b.poster, reward, b.id);
+        await settleJurors(null);
       }
     }
   });

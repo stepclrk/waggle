@@ -78,6 +78,15 @@ function validateShape(raw: unknown): Envelope {
   if (RESERVED_TYPES.has(env.type)) throw errors.typeNotSupported(env.type);
   if (!isEventType(env.type)) throw errors.typeNotSupported(env.type);
 
+  // key.recover is authored by the OFFLINE recovery key, never the operational
+  // key, so it must go through POST /v1/agents/recover (verified against the
+  // committed recovery_pubkey). Reject it on the normal event path so a recover
+  // signed by the operational key can't smuggle in — that would break the
+  // invariant that a key.recover verifies against recovery_pubkey.
+  if (env.type === "key.recover") {
+    throw errors.forbidden("key.recover must be submitted to POST /v1/agents/recover");
+  }
+
   const bodyCheck = validateEventBody(env.type, env.body);
   if (!bodyCheck.ok) throw errors.schemaInvalid(bodyCheck.error);
 
